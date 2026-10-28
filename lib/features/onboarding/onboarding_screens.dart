@@ -623,6 +623,7 @@ class BaselineResultScreen extends StatefulWidget {
 
 class _BaselineResultScreenState extends State<BaselineResultScreen> {
   final d = OnboardingData.instance;
+  bool _saving = false;
 
   @override
   Widget build(BuildContext context) {
@@ -885,25 +886,49 @@ class _BaselineResultScreenState extends State<BaselineResultScreen> {
                     color: white,
                     foreground: AppColors.primary,
                     trailingIcon: Icons.arrow_forward_rounded,
-                    onPressed: () {
-                      s.completeOnboarding(
-                        pincode: d.pincode.isEmpty ? '380015' : d.pincode,
-                        district: d.district,
-                        householdSize: d.householdSize,
-                        homeType: d.homeType,
-                        roofAccess: d.roofAccess,
-                        electricityUnits: units,
-                        lpgCylinders: d.lpgCylinders,
-                        travelMode: d.travelMode,
-                        weeklyKm: d.weeklyKm,
-                        appliances: d.appliances.toList(),
-                        goalPercent: d.goalPercent,
-                        source:
-                            d.electricityMethod == 'quiz' ? 'quiz' : 'manual',
-                      );
-                      HapticFeedback.mediumImpact();
-                      context.go('/community/join?onboarding=1');
-                    },
+                    loading: _saving,
+                    onPressed: _saving
+                        ? null
+                        : () async {
+                            setState(() => _saving = true);
+                            try {
+                              await s.completeOnboarding(
+                                pincode:
+                                    d.pincode.isEmpty ? '380015' : d.pincode,
+                                district: d.district,
+                                householdSize: d.householdSize,
+                                homeType: d.homeType,
+                                roofAccess: d.roofAccess,
+                                electricityUnits: units,
+                                lpgCylinders: d.lpgCylinders,
+                                travelMode: d.travelMode,
+                                weeklyKm: d.weeklyKm,
+                                appliances: d.appliances.toList(),
+                                goalPercent: d.goalPercent,
+                                source: d.electricityMethod == 'quiz'
+                                    ? 'quiz'
+                                    : 'manual',
+                              );
+                            } catch (error, stackTrace) {
+                              FlutterError.reportError(FlutterErrorDetails(
+                                exception: error,
+                                stack: stackTrace,
+                                library: 'Saving onboarding profile',
+                              ));
+                              if (mounted) {
+                                setState(() => _saving = false);
+                                showAppSnack(
+                                  context,
+                                  'Could not save your profile. Check your connection and try again.',
+                                  icon: Icons.error_outline_rounded,
+                                );
+                              }
+                              return;
+                            }
+                            if (!mounted) return;
+                            HapticFeedback.mediumImpact();
+                            context.go('/community/join?onboarding=1');
+                          },
                   ),
                 ),
               ],

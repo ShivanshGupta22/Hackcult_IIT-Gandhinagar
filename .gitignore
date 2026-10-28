@@ -9,3 +9,5 @@ android/.gradle/
 android/local.properties
 android/key.properties
 ios/Pods/
+functions/node_modules/
+functions/lib/

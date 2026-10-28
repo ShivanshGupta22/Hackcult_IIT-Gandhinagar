@@ -8,14 +8,16 @@ import 'data/app_state.dart';
 import 'router/app_router.dart';
 
 class LifeMitraApp extends StatefulWidget {
-  const LifeMitraApp({super.key});
+  const LifeMitraApp({super.key, this.useFirebase = false});
+
+  final bool useFirebase;
 
   @override
   State<LifeMitraApp> createState() => _LifeMitraAppState();
 }
 
 class _LifeMitraAppState extends State<LifeMitraApp> {
-  late final AppState _state = AppState();
+  late final AppState _state = AppState(useFirebase: widget.useFirebase);
   late final GoRouter _router = buildRouter(_state);
 
   @override

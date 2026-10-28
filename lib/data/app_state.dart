@@ -1,14 +1,18 @@
+import 'dart:async';
 import 'dart:math';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 import '../core/logic/calculators.dart';
+import 'bill_proof_storage.dart';
 import 'mock_data.dart';
 import 'models.dart';
 
-/// In-memory application state for the frontend build.
-/// Every mutation here maps 1:1 to a Firestore write described in
-/// backendschema.md (see comments) so the Firebase layer can be dropped in.
+/// App state backed by Firebase in production and deterministic mock data in tests.
 /// Fires only when the *auth/route-gating* state changes (sign-in, sign-out,
 /// onboarding complete). GoRouter listens to this instead of the whole
 /// [AppState], so routine data updates (points, tasks, profile edits) never
@@ -20,20 +24,39 @@ class AuthChanges extends ChangeNotifier {
 
 class AppState extends ChangeNotifier {
   final AuthChanges authChanges = AuthChanges();
+  AppState({this.useFirebase = false}) {
+    if (useFirebase) {
+      _authSubscription = _auth.authStateChanges().listen(
+        (firebaseUser) => unawaited(_applyAuthUser(firebaseUser)),
+        onError: (Object error, StackTrace stackTrace) {
+          FlutterError.reportError(FlutterErrorDetails(
+            exception: error,
+            stack: stackTrace,
+            library: 'Firebase authentication',
+          ));
+        },
+      );
+    } else {
+      _seedDemoAccounts();
+    }
+  }
+
+  final bool useFirebase;
+  StreamSubscription<firebase_auth.User?>? _authSubscription;
+  firebase_auth.FirebaseAuth get _auth => firebase_auth.FirebaseAuth.instance;
+  FirebaseFirestore get _firestore => FirebaseFirestore.instance;
 
   @override
   void dispose() {
+    unawaited(_authSubscription?.cancel());
     authChanges.dispose();
     super.dispose();
-  }
-
-  AppState() {
-    _seedDemoAccounts();
   }
 
   final config = const AppConfig();
   late final footprintCalc = FootprintCalculator(config);
   late final solarCalc = SolarCalculator(config);
+  late final BillProofStorage billProofStorage = BillProofStorage();
 
   // ---------- Auth ----------
   AppUser? user;
@@ -70,6 +93,19 @@ class AppState extends ChangeNotifier {
 
   /// Returns an error message or null on success.
   Future<String?> signInWithEmail(String email, String password) async {
+    if (useFirebase) {
+      try {
+        final credential = await _auth.signInWithEmailAndPassword(
+          email: email.trim(),
+          password: password,
+        );
+        await _applyAuthUser(credential.user);
+        return null;
+      } on firebase_auth.FirebaseAuthException catch (error) {
+        return _authError(error);
+      }
+    }
+
     await Future<void>.delayed(const Duration(milliseconds: 700));
     final key = email.trim().toLowerCase();
     final account = _accounts[key];
@@ -90,6 +126,22 @@ class AppState extends ChangeNotifier {
       {required String name,
       required String email,
       required String password}) async {
+    if (useFirebase) {
+      try {
+        final credential = await _auth.createUserWithEmailAndPassword(
+          email: email.trim(),
+          password: password,
+        );
+        final newUser = credential.user!;
+        await newUser.updateDisplayName(name.trim());
+        await _writeInitialProfile(newUser, displayName: name.trim());
+        await _applyAuthUser(newUser);
+        return null;
+      } on firebase_auth.FirebaseAuthException catch (error) {
+        return _authError(error);
+      }
+    }
+
     await Future<void>.delayed(const Duration(milliseconds: 800));
     final key = email.trim().toLowerCase();
     if (_accounts.containsKey(key)) return 'email-already-in-use';
@@ -110,6 +162,37 @@ class AppState extends ChangeNotifier {
   }
 
   Future<String?> signInWithGoogle({bool adminPortal = false}) async {
+    if (useFirebase) {
+      try {
+        firebase_auth.UserCredential credential;
+        if (kIsWeb) {
+          credential = await _auth.signInWithPopup(
+            firebase_auth.GoogleAuthProvider(),
+          );
+        } else {
+          final googleUser = await GoogleSignIn().signIn();
+          if (googleUser == null) return 'google-sign-in-cancelled';
+          final googleAuth = await googleUser.authentication;
+          final oauthCredential = firebase_auth.GoogleAuthProvider.credential(
+            accessToken: googleAuth.accessToken,
+            idToken: googleAuth.idToken,
+          );
+          credential = await _auth.signInWithCredential(oauthCredential);
+        }
+        await _applyAuthUser(credential.user);
+        return null;
+      } on firebase_auth.FirebaseAuthException catch (error) {
+        return _authError(error);
+      } catch (error, stackTrace) {
+        FlutterError.reportError(FlutterErrorDetails(
+          exception: error,
+          stack: stackTrace,
+          library: 'Google sign-in',
+        ));
+        return 'google-sign-in-failed';
+      }
+    }
+
     await Future<void>.delayed(const Duration(milliseconds: 900));
     final key =
         adminPortal ? 'officer@geda.gujarat.gov.in' : 'nisha.patel@gmail.com';
@@ -131,15 +214,146 @@ class AppState extends ChangeNotifier {
   }
 
   Future<String?> sendPasswordReset(String email) async {
+    if (useFirebase) {
+      try {
+        await _auth.sendPasswordResetEmail(email: email.trim());
+        return null;
+      } on firebase_auth.FirebaseAuthException catch (error) {
+        return _authError(error);
+      }
+    }
+
     await Future<void>.delayed(const Duration(milliseconds: 600));
     return null;
   }
 
   void signOut() {
+    if (useFirebase) {
+      unawaited(_auth.signOut().catchError((Object error, StackTrace stack) {
+        FlutterError.reportError(FlutterErrorDetails(
+          exception: error,
+          stack: stack,
+          library: 'Firebase sign-out',
+        ));
+      }));
+      if (_auth.currentUser != null) {
+        unawaited(GoogleSignIn().signOut());
+      }
+    }
     user = null;
     _resetSession();
     notifyListeners();
     authChanges.bump();
+  }
+
+  String _authError(firebase_auth.FirebaseAuthException error) {
+    return switch (error.code) {
+      'email-already-in-use' => 'email-already-in-use',
+      'invalid-email' => 'Enter a valid email address.',
+      'invalid-credential' || 'wrong-password' || 'user-not-found' =>
+        'Email or password is incorrect.',
+      'weak-password' => 'Choose a stronger password.',
+      'user-disabled' => 'This account has been disabled.',
+      'too-many-requests' => 'Too many attempts. Please try again later.',
+      'network-request-failed' =>
+        'Network error. Check your connection and try again.',
+      'popup-closed-by-user' || 'web-context-cancelled' =>
+        'Google sign-in was cancelled.',
+      _ => error.message ?? 'Authentication failed (${error.code}).',
+    };
+  }
+
+  Future<void> _writeInitialProfile(
+    firebase_auth.User authUser, {
+    String? displayName,
+  }) async {
+    final ref = _firestore.collection('users').doc(authUser.uid);
+    final snapshot = await ref.get();
+    if (snapshot.exists) return;
+    await ref.set({
+      'uid': authUser.uid,
+      'email': authUser.email ?? '',
+      'displayName': displayName ??
+          authUser.displayName ??
+          authUser.email?.split('@').first ??
+          'Citizen',
+      'role': 'citizen',
+      'authProvider': authUser.providerData
+          .any((provider) => provider.providerId == 'google.com')
+          ? 'google'
+          : 'password',
+      'onboardingComplete': false,
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Future<void> _applyAuthUser(firebase_auth.User? authUser) async {
+    if (authUser == null) {
+      if (user != null) {
+        user = null;
+        _resetSession();
+        notifyListeners();
+        authChanges.bump();
+      }
+      return;
+    }
+
+    await _writeInitialProfile(authUser);
+    final results = await Future.wait([
+      _firestore.collection('users').doc(authUser.uid).get(),
+      authUser.getIdTokenResult(),
+    ]);
+    final profile =
+        (results[0] as DocumentSnapshot<Map<String, dynamic>>).data() ?? {};
+    final claims =
+        (results[1] as firebase_auth.IdTokenResult).claims ?? {};
+    final isAdmin = claims['admin'] == true;
+    final isCaptain = claims['captain'] == true;
+    final provider = authUser.providerData
+        .any((info) => info.providerId == 'google.com');
+    final name = (profile['displayName'] as String?) ??
+        authUser.displayName ??
+        authUser.email?.split('@').first ??
+        'Citizen';
+    final loadedUser = AppUser(
+      uid: authUser.uid,
+      email: authUser.email ?? '',
+      displayName: name,
+      role: isAdmin
+          ? UserRole.admin
+          : isCaptain
+              ? UserRole.captain
+              : UserRole.citizen,
+      authProvider: provider ? AuthProvider.google : AuthProvider.password,
+      photoUrl: authUser.photoURL,
+      language: profile['language'] as String? ?? 'en',
+      district: profile['district'] as String? ?? 'Ahmedabad',
+      pincode: profile['pincode'] as String? ?? '380015',
+      householdSize: profile['householdSize'] as int? ?? 4,
+      homeType: profile['homeType'] as String? ?? 'flat',
+      roofAccess: profile['roofAccess'] as String? ?? 'yes',
+      appliances: List<String>.from(
+          profile['appliances'] as List? ?? const ['ac', 'fridge', 'washing_machine', 'geyser']),
+      travelMode: profile['travelMode'] as String? ?? 'two_wheeler',
+      weeklyKm: (profile['weeklyKm'] as num?)?.toDouble() ?? 70,
+      baselineUnits: (profile['baselineUnits'] as num?)?.toDouble() ?? 250,
+      baselineCo2Kg: (profile['baselineCo2Kg'] as num?)?.toDouble() ?? 226.9,
+      goalPercent: profile['goalPercent'] as int? ?? 15,
+      onboardingComplete: profile['onboardingComplete'] as bool? ?? false,
+      communityId: profile['communityId'] as String?,
+      points: profile['points'] as int? ?? 0,
+      weeklyPoints: profile['weeklyPoints'] as int? ?? 0,
+      streak: profile['streak'] as int? ?? 0,
+      longestStreak: profile['longestStreak'] as int? ?? 0,
+      freezeTokens: profile['freezeTokens'] as int? ?? 1,
+      badges: List<String>.from(profile['badges'] as List? ?? const []),
+      peakNudge: profile['peakNudge'] as bool? ?? true,
+      weatherNudge: profile['weatherNudge'] as bool? ?? true,
+      communityUpdates: profile['communityUpdates'] as bool? ?? true,
+      streakReminders: profile['streakReminders'] as bool? ?? true,
+    );
+    _setUser(loadedUser);
   }
 
   void _setUser(AppUser u) {
@@ -244,7 +458,7 @@ class AppState extends ChangeNotifier {
 
   // ---------- Onboarding ----------
   // Writes: footprints (isBaseline) + users profile fields (backendschema §2.1, §2.8)
-  void completeOnboarding({
+  Future<void> completeOnboarding({
     required String pincode,
     required String district,
     required int householdSize,
@@ -266,6 +480,57 @@ class AppState extends ChangeNotifier {
       busKm: travelMode == 'bus_metro' ? weeklyKm * 4.33 : 0,
     );
     final r = footprintCalc.calculate(input);
+    final month = DateTime(DateTime.now().year, DateTime.now().month);
+    if (useFirebase) {
+      final uid = user!.uid;
+      final monthId =
+          '${month.year}-${month.month.toString().padLeft(2, '0')}';
+      final batch = _firestore.batch();
+      batch.set(
+        _firestore.collection('users').doc(uid),
+        {
+          'pincode': pincode,
+          'district': district,
+          'householdSize': householdSize,
+          'homeType': homeType,
+          'roofAccess': roofAccess,
+          'travelMode': travelMode,
+          'weeklyKm': weeklyKm,
+          'appliances': appliances,
+          'baselineUnits': electricityUnits,
+          'baselineCo2Kg': r.totalKg,
+          'goalPercent': goalPercent,
+          'onboardingComplete': true,
+          'updatedAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
+      batch.set(
+        _firestore
+            .collection('users')
+            .doc(uid)
+            .collection('footprints')
+            .doc(monthId),
+        {
+          'month': Timestamp.fromDate(month),
+          'electricityUnits': electricityUnits,
+          'electricityKg': r.electricityKg,
+          'cookingKg': r.cookingKg,
+          'transportKg': r.transportKg,
+          'source': source,
+          'isBaseline': true,
+          'unitsSaved': 0,
+          'rupeesSaved': 0,
+          'percentChange': 0,
+          'pointsAwarded': 0,
+          'lpgCylinders': lpgCylinders,
+          'createdAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
+      await batch.commit();
+    }
+
     u
       ..pincode = pincode
       ..district = district
@@ -282,7 +547,7 @@ class AppState extends ChangeNotifier {
     footprints
       ..clear()
       ..add(FootprintEntry(
-        month: DateTime(DateTime.now().year, DateTime.now().month),
+        month: month,
         electricityUnits: electricityUnits,
         electricityKg: r.electricityKg,
         cookingKg: r.cookingKg,

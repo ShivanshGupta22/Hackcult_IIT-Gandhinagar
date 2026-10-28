@@ -254,9 +254,15 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _google() async {
     setState(() => _googleLoading = true);
-    await AppScope.read(context).signInWithGoogle();
+    final err = await AppScope.read(context).signInWithGoogle();
     if (!mounted) return;
     setState(() => _googleLoading = false);
+    if (err != null) {
+      if (err != 'google-sign-in-cancelled') {
+        setState(() => _error = err);
+      }
+      return;
+    }
     _route();
   }
 
@@ -450,14 +456,25 @@ class _SignUpScreenState extends State<SignUpScreen> {
           onAction: () => context.go('/login'));
       return;
     }
+    if (err != null) {
+      showAppSnack(context, err, icon: Icons.error_outline_rounded);
+      return;
+    }
     final u = AppScope.read(context).user!;
     context.go(u.isAdmin ? '/admin' : '/onboarding/1');
   }
 
   Future<void> _google() async {
     setState(() => _googleLoading = true);
-    await AppScope.read(context).signInWithGoogle();
+    final err = await AppScope.read(context).signInWithGoogle();
     if (!mounted) return;
+    setState(() => _googleLoading = false);
+    if (err != null) {
+      if (err != 'google-sign-in-cancelled') {
+        showAppSnack(context, err, icon: Icons.error_outline_rounded);
+      }
+      return;
+    }
     final u = AppScope.read(context).user!;
     context.go(u.onboardingComplete ? '/home' : '/onboarding/1');
   }
@@ -669,12 +686,15 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   Future<void> _send() async {
     if (!_form.currentState!.validate()) return;
     setState(() => _loading = true);
-    await AppScope.read(context).sendPasswordReset(_email.text);
+    final err = await AppScope.read(context).sendPasswordReset(_email.text);
     if (!mounted) return;
     setState(() {
       _loading = false;
-      _sent = true;
+      _sent = err == null;
     });
+    if (err != null) {
+      showAppSnack(context, err, icon: Icons.error_outline_rounded);
+    }
   }
 
   @override
