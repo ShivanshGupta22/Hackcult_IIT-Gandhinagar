@@ -1,0 +1,725 @@
+import 'dart:math';
+
+import 'package:flutter/material.dart';
+
+import '../core/logic/calculators.dart';
+import 'mock_data.dart';
+import 'models.dart';
+
+/// In-memory application state for the frontend build.
+/// Every mutation here maps 1:1 to a Firestore write described in
+/// backendschema.md (see comments) so the Firebase layer can be dropped in.
+/// Fires only when the *auth/route-gating* state changes (sign-in, sign-out,
+/// onboarding complete). GoRouter listens to this instead of the whole
+/// [AppState], so routine data updates (points, tasks, profile edits) never
+/// rebuild the navigator stack — which is what caused black screens when a
+/// dialog or pushed page was open.
+class AuthChanges extends ChangeNotifier {
+  void bump() => notifyListeners();
+}
+
+class AppState extends ChangeNotifier {
+  final AuthChanges authChanges = AuthChanges();
+
+  @override
+  void dispose() {
+    authChanges.dispose();
+    super.dispose();
+  }
+
+  AppState() {
+    _seedDemoAccounts();
+  }
+
+  final config = const AppConfig();
+  late final footprintCalc = FootprintCalculator(config);
+  late final solarCalc = SolarCalculator(config);
+
+  // ---------- Auth ----------
+  AppUser? user;
+  final Map<String, (String password, AppUser user)> _accounts = {};
+  bool get isSignedIn => user != null;
+
+  void _seedDemoAccounts() {
+    final nisha = AppUser(
+      uid: 'u_nisha',
+      email: 'nisha@demo.com',
+      displayName: 'Nisha Patel',
+      role: UserRole.citizen,
+      authProvider: AuthProvider.password,
+      onboardingComplete: true,
+      communityId: 'c1',
+      points: 1240,
+      weeklyPoints: 180,
+      streak: 5,
+      longestStreak: 12,
+      badges: const ['first_step', 'peak_shifter', 'bill_verified', 'streak_7'],
+    );
+    final admin = AppUser(
+      uid: 'u_admin',
+      email: 'admin@geda.demo',
+      displayName: 'GEDA Programme Officer',
+      role: UserRole.admin,
+      authProvider: AuthProvider.password,
+      onboardingComplete: true,
+      district: 'Gandhinagar',
+    );
+    _accounts['nisha@demo.com'] = ('Demo@1234', nisha);
+    _accounts['admin@geda.demo'] = ('Admin@1234', admin);
+  }
+
+  /// Returns an error message or null on success.
+  Future<String?> signInWithEmail(String email, String password) async {
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    final key = email.trim().toLowerCase();
+    final account = _accounts[key];
+    if (account == null) {
+      return 'No account found with this email. Create one or continue with Google.';
+    }
+    if (account.$2.authProvider == AuthProvider.google) {
+      return 'This email uses Google sign-in. Please continue with Google.';
+    }
+    if (account.$1 != password) {
+      return 'Incorrect password. Try again or reset it.';
+    }
+    _setUser(account.$2);
+    return null;
+  }
+
+  Future<String?> signUpWithEmail(
+      {required String name,
+      required String email,
+      required String password}) async {
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+    final key = email.trim().toLowerCase();
+    if (_accounts.containsKey(key)) return 'email-already-in-use';
+    final u = AppUser(
+      uid: 'u_${Random().nextInt(1 << 30)}',
+      email: key,
+      displayName: name.trim(),
+      role: key.endsWith('@geda.gujarat.gov.in')
+          ? UserRole.admin
+          : UserRole.citizen,
+      authProvider: AuthProvider.password,
+      onboardingComplete: key.endsWith('@geda.gujarat.gov.in'),
+      points: 0,
+    );
+    _accounts[key] = (password, u);
+    _setUser(u);
+    return null;
+  }
+
+  Future<String?> signInWithGoogle({bool adminPortal = false}) async {
+    await Future<void>.delayed(const Duration(milliseconds: 900));
+    final key =
+        adminPortal ? 'officer@geda.gujarat.gov.in' : 'nisha.patel@gmail.com';
+    var account = _accounts[key];
+    if (account == null) {
+      final u = AppUser(
+        uid: 'u_g_${Random().nextInt(1 << 30)}',
+        email: key,
+        displayName: adminPortal ? 'Officer (Google Workspace)' : 'Nisha Patel',
+        role: adminPortal ? UserRole.admin : UserRole.citizen,
+        authProvider: AuthProvider.google,
+        onboardingComplete: adminPortal,
+      );
+      account = ('', u);
+      _accounts[key] = account;
+    }
+    _setUser(account.$2);
+    return null;
+  }
+
+  Future<String?> sendPasswordReset(String email) async {
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    return null;
+  }
+
+  void signOut() {
+    user = null;
+    _resetSession();
+    notifyListeners();
+    authChanges.bump();
+  }
+
+  void _setUser(AppUser u) {
+    user = u;
+    _resetSession();
+    if (u.uid == 'u_nisha') _seedNishaHistory();
+    notifyListeners();
+    authChanges.bump();
+  }
+
+  // ---------- Session data (per user) ----------
+  final List<TaskLog> taskLogs = [];
+  final List<FootprintEntry> footprints = [];
+  final List<PointsEntry> ledger = [];
+  final List<SolarAssessment> assessments = [];
+  final List<Lead> myLeads = [];
+  final Set<String> notApplicable = {};
+  final Set<String> dismissedNudges = {};
+  int pointsTodaySelf = 0;
+
+  void _resetSession() {
+    taskLogs.clear();
+    footprints.clear();
+    ledger.clear();
+    assessments.clear();
+    myLeads.clear();
+    notApplicable.clear();
+    dismissedNudges.clear();
+    pointsTodaySelf = 0;
+  }
+
+  void _seedNishaHistory() {
+    final now = DateTime.now();
+    DateTime m(int back) => DateTime(now.year, now.month - back);
+    final res = footprintCalc.calculate(
+        const FootprintInput(electricityUnits: 250, lpgKg: 11.4, petrolL: 6.7));
+    footprints.add(FootprintEntry(
+      month: m(3),
+      electricityUnits: 250,
+      electricityKg: res.electricityKg,
+      cookingKg: res.cookingKg,
+      transportKg: res.transportKg,
+      source: 'manual',
+      isBaseline: true,
+    ));
+    for (final (back, units, src) in [
+      (2, 238.0, 'manual'),
+      (1, 221.0, 'bill'),
+      (0, 210.0, 'bill')
+    ]) {
+      final r = footprintCalc.calculate(
+          FootprintInput(electricityUnits: units, lpgKg: 11.4, petrolL: 6.2));
+      final saved = 250 - units;
+      footprints.add(FootprintEntry(
+        month: m(back),
+        electricityUnits: units,
+        electricityKg: r.electricityKg,
+        cookingKg: r.cookingKg,
+        transportKg: r.transportKg,
+        source: src,
+        unitsSaved: saved,
+        rupeesSaved: saved * config.avgTariffPerUnit,
+        percentChange: (r.totalKg - res.totalKg) / res.totalKg * 100,
+        pointsAwarded:
+            src == 'bill' ? (saved * config.pointsPerUnitSaved).round() : 0,
+      ));
+    }
+    ledger.addAll([
+      PointsEntry(
+          delta: 80,
+          reason: 'Bill verified · 40 units saved',
+          createdAt: now.subtract(const Duration(days: 2)),
+          icon: Icons.receipt_long_rounded),
+      PointsEntry(
+          delta: 20,
+          reason: 'Task · Set AC to 24°C',
+          createdAt: now.subtract(const Duration(days: 1, hours: 3)),
+          icon: Icons.bolt_rounded),
+      PointsEntry(
+          delta: 15,
+          reason: 'Task · Load shift washing machine',
+          createdAt: now.subtract(const Duration(days: 1, hours: 5)),
+          icon: Icons.schedule_rounded),
+      PointsEntry(
+          delta: 50,
+          reason: '7-day streak bonus',
+          createdAt: now.subtract(const Duration(days: 3)),
+          icon: Icons.local_fire_department_rounded),
+      PointsEntry(
+          delta: 10,
+          reason: 'Task · Segregate waste',
+          createdAt: now.subtract(const Duration(days: 3, hours: 2)),
+          icon: Icons.recycling_rounded),
+    ]);
+    taskLogs.add(TaskLog(
+        taskId: 'standby_off',
+        date: now,
+        status: TaskStatus.done,
+        pointsAwarded: 5));
+    pointsTodaySelf = 5;
+  }
+
+  // ---------- Onboarding ----------
+  // Writes: footprints (isBaseline) + users profile fields (backendschema §2.1, §2.8)
+  void completeOnboarding({
+    required String pincode,
+    required String district,
+    required int householdSize,
+    required String homeType,
+    required String roofAccess,
+    required double electricityUnits,
+    required double lpgCylinders,
+    required String travelMode,
+    required double weeklyKm,
+    required List<String> appliances,
+    required int goalPercent,
+    required String source,
+  }) {
+    final u = user!;
+    final input = FootprintInput(
+      electricityUnits: electricityUnits,
+      lpgKg: lpgCylinders * 14.2,
+      petrolL: footprintCalc.petrolLitresFromKm(travelMode, weeklyKm),
+      busKm: travelMode == 'bus_metro' ? weeklyKm * 4.33 : 0,
+    );
+    final r = footprintCalc.calculate(input);
+    u
+      ..pincode = pincode
+      ..district = district
+      ..householdSize = householdSize
+      ..homeType = homeType
+      ..roofAccess = roofAccess
+      ..travelMode = travelMode
+      ..weeklyKm = weeklyKm
+      ..appliances = appliances
+      ..baselineUnits = electricityUnits
+      ..baselineCo2Kg = r.totalKg
+      ..goalPercent = goalPercent
+      ..onboardingComplete = true;
+    footprints
+      ..clear()
+      ..add(FootprintEntry(
+        month: DateTime(DateTime.now().year, DateTime.now().month),
+        electricityUnits: electricityUnits,
+        electricityKg: r.electricityKg,
+        cookingKg: r.cookingKg,
+        transportKg: r.transportKg,
+        source: source,
+        isBaseline: true,
+      ));
+    notifyListeners();
+    authChanges.bump();
+  }
+
+  // ---------- Tasks & points ----------
+  List<TaskItem> get todayTasks {
+    final u = user;
+    if (u == null) return const [];
+    final seed = u.uid.hashCode ^ DateTime.now().day;
+    final rnd = Random(seed);
+    final pool = MockData.tasks.where((t) {
+      if (notApplicable.contains(t.id)) return false;
+      if (t.applianceTags.isNotEmpty &&
+          !t.applianceTags.any(u.appliances.contains)) {
+        return false;
+      }
+      if (t.seasonTags.contains('diwali') &&
+          DateTime.now().month != 10 &&
+          DateTime.now().month != 11) {
+        return false;
+      }
+      return t.verification != Verification.bill &&
+          t.verification != Verification.vendor;
+    }).toList();
+    TaskItem pick(bool Function(TaskItem) f, Set<String> used) {
+      final c = pool.where((t) => f(t) && !used.contains(t.id)).toList();
+      final list =
+          c.isEmpty ? pool.where((t) => !used.contains(t.id)).toList() : c;
+      return list[rnd.nextInt(list.length)];
+    }
+
+    final used = <String>{};
+    final a = pick(
+        (t) =>
+            t.difficulty == Difficulty.easy && t.theme == LifeTheme.saveEnergy,
+        used);
+    used.add(a.id);
+    final b = pick((t) => t.difficulty == Difficulty.medium, used);
+    used.add(b.id);
+    final c = pick((t) => t.theme != LifeTheme.saveEnergy, used);
+    return [a, b, c];
+  }
+
+  TaskStatus statusOf(String taskId) {
+    final today = DateTime.now();
+    for (final l in taskLogs.reversed) {
+      if (l.taskId == taskId &&
+          l.date.year == today.year &&
+          l.date.month == today.month &&
+          l.date.day == today.day) {
+        return l.status;
+      }
+    }
+    return TaskStatus.pending;
+  }
+
+  int get tasksDoneToday =>
+      todayTasks.where((t) => statusOf(t.id) == TaskStatus.done).length;
+
+  /// Completes a task. Returns a result describing points and unlocks.
+  /// Firestore batch: taskLogs + pointsLedger + users + communities + goals + adminMetrics (backendschema §6.1)
+  TaskCompletion completeTask(TaskItem task, {bool withPhoto = false}) {
+    final u = user!;
+    var points = task.points + (withPhoto ? config.photoBonus : 0);
+    var capped = false;
+    if (task.verification == Verification.self) {
+      final remaining = config.dailySelfPointsCap - pointsTodaySelf;
+      if (remaining <= 0) {
+        points = 0;
+        capped = true;
+      } else if (points > remaining) {
+        points = remaining;
+        capped = true;
+      }
+      pointsTodaySelf += points;
+    }
+    final prevLevel = LevelEngine.levelFor(u.points).$1;
+    taskLogs.add(TaskLog(
+        taskId: task.id,
+        date: DateTime.now(),
+        status: TaskStatus.done,
+        pointsAwarded: points,
+        hasProof: withPhoto));
+    if (points > 0) {
+      ledger.insert(
+          0,
+          PointsEntry(
+              delta: points,
+              reason: 'Task · ${task.title}',
+              createdAt: DateTime.now(),
+              icon: task.theme.icon));
+    }
+    u.points += points;
+    u.weeklyPoints += points;
+    if (tasksDoneToday == 1 && u.uid != 'u_nisha') {
+      u.streak += 1;
+      if (u.streak > u.longestStreak) u.longestStreak = u.streak;
+    }
+    final newBadges = <BadgeItem>[];
+    void award(String id) {
+      if (!u.badges.contains(id)) {
+        u.badges = [...u.badges, id];
+        newBadges.add(MockData.badgeById(id));
+      }
+    }
+
+    if (taskLogs.where((l) => l.status == TaskStatus.done).length == 1) {
+      award('first_step');
+    }
+    if (task.id == 'load_shift_wm') award('peak_shifter');
+    if (task.id == 'led_swap') award('led_legend');
+    if (task.id == 'solar_assessment') {
+      // handled in solar flow
+    }
+    final goal = myGoal;
+    if (goal != null) {
+      final add = goal.metric == 'tasks'
+          ? 1.0
+          : goal.metric == 'units'
+              ? task.estUnitsSaved
+              : task.estCo2Kg;
+      goal.progress = min(goal.target, goal.progress + add);
+      goal.myContribution += add;
+    }
+    final newLevel = LevelEngine.levelFor(u.points);
+    notifyListeners();
+    return TaskCompletion(
+      points: points,
+      capped: capped,
+      leveledUp: newLevel.$1 != prevLevel ? newLevel.$2 : null,
+      newBadges: newBadges,
+    );
+  }
+
+  void skipTask(TaskItem task) {
+    taskLogs.add(TaskLog(
+        taskId: task.id, date: DateTime.now(), status: TaskStatus.skipped));
+    notifyListeners();
+  }
+
+  void markNotApplicable(TaskItem task) {
+    notApplicable.add(task.id);
+    taskLogs.add(TaskLog(
+        taskId: task.id,
+        date: DateTime.now(),
+        status: TaskStatus.notApplicable));
+    notifyListeners();
+  }
+
+  void dismissNudge(String id) {
+    dismissedNudges.add(id);
+    notifyListeners();
+  }
+
+  Nudge? get activeNudge {
+    final u = user;
+    if (u == null) return null;
+    for (final n in MockData.nudges) {
+      if (dismissedNudges.contains(n.id)) continue;
+      if (n.id == 'peak_shift' && !u.peakNudge) continue;
+      if (n.id == 'heat_ac24' &&
+          (!u.weatherNudge || !u.appliances.contains('ac'))) {
+        continue;
+      }
+      if (n.id == 'goal_close' && u.communityId == null) continue;
+      if (n.taskId != null && statusOf(n.taskId!) == TaskStatus.done) continue;
+      return n;
+    }
+    return null;
+  }
+
+  // ---------- Footprint ----------
+  FootprintEntry? get baseline =>
+      footprints.where((f) => f.isBaseline).firstOrNull;
+  FootprintEntry? get latest => footprints.isEmpty ? null : footprints.last;
+
+  double get totalUnitsSaved => footprints.fold(0, (s, f) => s + f.unitsSaved);
+  double get totalRupeesSaved =>
+      footprints.fold(0, (s, f) => s + f.rupeesSaved);
+  double get totalCo2Saved => footprints
+      .where((f) => !f.isBaseline)
+      .fold(0, (s, f) => s + max(0, (baseline?.co2Kg ?? 0) - f.co2Kg));
+
+  /// Writes: footprints + (bill) pointsLedger/users + adminMetrics (backendschema §6.2)
+  int addMonth(
+      {required DateTime month,
+      required double units,
+      required bool fromBill}) {
+    final u = user!;
+    final b = baseline;
+    final r = footprintCalc.calculate(FootprintInput(
+      electricityUnits: units,
+      lpgKg: (b?.cookingKg ?? 0) / config.factors.lpg,
+      petrolL: (b?.transportKg ?? 0) / config.factors.petrol,
+    ));
+    final saved = max(0.0, u.baselineUnits - units);
+    final points = fromBill ? (saved * config.pointsPerUnitSaved).round() : 0;
+    footprints.removeWhere((f) =>
+        f.month.year == month.year &&
+        f.month.month == month.month &&
+        !f.isBaseline);
+    footprints.add(FootprintEntry(
+      month: month,
+      electricityUnits: units,
+      electricityKg: r.electricityKg,
+      cookingKg: r.cookingKg,
+      transportKg: r.transportKg,
+      source: fromBill ? 'bill' : 'manual',
+      unitsSaved: saved,
+      rupeesSaved: saved * config.avgTariffPerUnit,
+      percentChange: b == null ? 0 : (r.totalKg - b.co2Kg) / b.co2Kg * 100,
+      pointsAwarded: points,
+    ));
+    footprints.sort((a, b) => a.month.compareTo(b.month));
+    if (points > 0) {
+      u.points += points;
+      u.weeklyPoints += points;
+      ledger.insert(
+          0,
+          PointsEntry(
+              delta: points,
+              reason: 'Bill verified · ${saved.round()} units saved',
+              createdAt: DateTime.now(),
+              icon: Icons.receipt_long_rounded));
+      if (!u.badges.contains('bill_verified')) {
+        u.badges = [...u.badges, 'bill_verified'];
+      }
+    }
+    notifyListeners();
+    return points;
+  }
+
+  // ---------- Community ----------
+  Community? get myCommunity => user?.communityId == null
+      ? null
+      : MockData.communityById(user!.communityId!);
+  CommunityGoal? get myGoal => user?.communityId == null
+      ? null
+      : MockData.goals
+          .where((g) => g.communityId == user!.communityId)
+          .firstOrNull;
+
+  void joinCommunity(Community c) {
+    user!.communityId = c.id;
+    c.memberCount += 1;
+    notifyListeners();
+  }
+
+  Community createCommunity(
+      {required String name, required String type, required String pincode}) {
+    final c = Community(
+      id: 'c_${Random().nextInt(1 << 30)}',
+      name: name,
+      type: type,
+      district: MockData.districtFromPin(pincode),
+      pincode: pincode,
+      memberCount: 1,
+      joinCode: (name
+              .replaceAll(RegExp(r'[^A-Za-z]'), '')
+              .toUpperCase()
+              .padRight(4, 'X')
+              .substring(0, 4)) +
+          pincode.substring(pincode.length - 2),
+    );
+    MockData.communities.insert(0, c);
+    user!.communityId = c.id;
+    if (!user!.badges.contains('community_builder')) {
+      user!.badges = [...user!.badges, 'community_builder'];
+      user!.points += 50;
+      ledger.insert(
+          0,
+          PointsEntry(
+              delta: 50,
+              reason: 'Created community · $name',
+              createdAt: DateTime.now(),
+              icon: Icons.groups_rounded));
+    }
+    notifyListeners();
+    return c;
+  }
+
+  List<LeaderboardEntry> leaderboard(String scope, {bool weekly = false}) {
+    final u = user!;
+    final myPoints = weekly ? u.weeklyPoints : u.points;
+    final factor = weekly ? 0.12 : 1.0;
+    var names = MockData.leaderboardNames;
+    if (scope == 'district') {
+      names = names.where((n) => n.$2 == u.district).toList();
+    }
+    if (scope == 'community') names = names.take(9).toList();
+    final all = [
+      ...names.map((n) => (n.$1, n.$2, (n.$3 * factor).round(), false)),
+      (u.displayName, u.district, myPoints, true),
+    ]..sort((a, b) => b.$3.compareTo(a.$3));
+    return [
+      for (var i = 0; i < all.length; i++)
+        LeaderboardEntry(
+            rank: i + 1,
+            name: all[i].$1,
+            district: all[i].$2,
+            points: all[i].$3,
+            isMe: all[i].$4),
+    ];
+  }
+
+  // ---------- Solar ----------
+  SolarAssessment assess(
+      {required double monthlyUnits,
+      required double roofAreaM2,
+      required bool scSt}) {
+    final r = solarCalc.calculate(
+        monthlyUnits: monthlyUnits, roofAreaM2: roofAreaM2, scSt: scSt);
+    final a = SolarAssessment(
+      id: 'a_${Random().nextInt(1 << 30)}',
+      monthlyUnits: monthlyUnits,
+      roofAreaM2: roofAreaM2,
+      category: scSt ? 'sc_st' : 'general',
+      sizeKw: r.sizeKw,
+      annualGenUnits: r.annualGenUnits,
+      grossCost: r.grossCost,
+      centralSubsidy: r.centralSubsidy,
+      stateSubsidy: r.stateSubsidy,
+      netCost: r.netCost,
+      annualSavings: r.annualSavings,
+      paybackYears: r.paybackYears,
+      co2Avoided25yKg: r.co2Avoided25yKg,
+      createdAt: DateTime.now(),
+    );
+    assessments.insert(0, a);
+    if (statusOf('solar_assessment') != TaskStatus.done && user != null) {
+      taskLogs.add(TaskLog(
+          taskId: 'solar_assessment',
+          date: DateTime.now(),
+          status: TaskStatus.done,
+          pointsAwarded: 20));
+      user!.points += 20;
+      ledger.insert(
+          0,
+          PointsEntry(
+              delta: 20,
+              reason: 'Solar feasibility checked',
+              createdAt: DateTime.now(),
+              icon: Icons.wb_sunny_rounded));
+    }
+    notifyListeners();
+    return a;
+  }
+
+  SolarAssessment? assessmentById(String id) =>
+      assessments.where((a) => a.id == id).firstOrNull;
+
+  /// Writes: leads + pointsLedger + users.badges + adminMetrics (backendschema §6.3)
+  Lead requestSurvey(
+      {SolarAssessment? assessment,
+      Vendor? vendor,
+      required String phone,
+      String type = 'survey'}) {
+    final u = user!;
+    final lead = Lead(
+      id: 'l_${Random().nextInt(1 << 30)}',
+      userName: u.displayName,
+      district: u.district,
+      sizeKw: assessment?.sizeKw ?? 2,
+      netCost: assessment?.netCost ?? 10000,
+      type: type,
+      createdAt: DateTime.now(),
+      vendorName: vendor?.name,
+    );
+    myLeads.add(lead);
+    MockData.leads.insert(0, lead);
+    if (!u.badges.contains('solar_pioneer_lead')) {
+      u.badges = [...u.badges, 'solar_pioneer_lead'];
+      u.points += config.solarLeadPoints;
+      u.weeklyPoints += config.solarLeadPoints;
+      ledger.insert(
+          0,
+          PointsEntry(
+              delta: config.solarLeadPoints,
+              reason: 'Solar site survey requested',
+              createdAt: DateTime.now(),
+              icon: Icons.wb_sunny_rounded));
+    }
+    notifyListeners();
+    return lead;
+  }
+
+  // ---------- Profile / settings ----------
+  void updateProfile(void Function(AppUser u) edit) {
+    edit(user!);
+    notifyListeners();
+  }
+
+  void updateLeadStatus(Lead lead, String status) {
+    lead.status = status;
+    notifyListeners();
+  }
+
+  // ---------- Demo mode ----------
+  bool demoForceNudge = false;
+  void triggerDemoNudge() {
+    dismissedNudges.remove('peak_shift');
+    notifyListeners();
+  }
+}
+
+class TaskCompletion {
+  const TaskCompletion(
+      {required this.points,
+      required this.capped,
+      this.leveledUp,
+      this.newBadges = const []});
+  final int points;
+  final bool capped;
+  final String? leveledUp;
+  final List<BadgeItem> newBadges;
+}
+
+/// Simple inherited access: `AppScope.of(context)` (rebuilds on change).
+class AppScope extends InheritedNotifier<AppState> {
+  const AppScope({super.key, required AppState state, required super.child})
+      : super(notifier: state);
+
+  static AppState of(BuildContext context) {
+    final scope = context.dependOnInheritedWidgetOfExactType<AppScope>();
+    assert(scope != null, 'AppScope not found');
+    return scope!.notifier!;
+  }
+
+  static AppState read(BuildContext context) {
+    final scope = context.getInheritedWidgetOfExactType<AppScope>();
+    return scope!.notifier!;
+  }
+}
