@@ -359,20 +359,39 @@ class AppState extends ChangeNotifier {
       return;
     }
 
-    await _writeInitialProfile(authUser);
-    final identityResults = await Future.wait([
-      _firestore.collection('users').doc(authUser.uid).get(),
-      authUser.getIdTokenResult(true),
-    ]);
-    final profile =
-        (identityResults[0] as DocumentSnapshot<Map<String, dynamic>>).data() ??
-            {};
-    final claims =
-        (identityResults[1] as firebase_auth.IdTokenResult).claims ?? {};
+    final claims = (await authUser.getIdTokenResult(true)).claims ?? {};
     final isAdmin = claims['admin'] == true;
     final isCaptain = claims['captain'] == true;
     final provider =
         authUser.providerData.any((info) => info.providerId == 'google.com');
+    Map<String, dynamic> profile;
+    try {
+      await _writeInitialProfile(authUser);
+      profile = (await _firestore.collection('users').doc(authUser.uid).get())
+              .data() ??
+          {};
+    } on FirebaseException catch (error, stackTrace) {
+      FlutterError.reportError(FlutterErrorDetails(
+        exception: error,
+        stack: stackTrace,
+        library: 'Firebase sign-in profile loading',
+      ));
+      _setUser(AppUser(
+        uid: authUser.uid,
+        email: authUser.email ?? '',
+        displayName: authUser.displayName ??
+            authUser.email?.split('@').first ??
+            'Citizen',
+        role: isAdmin
+            ? UserRole.admin
+            : isCaptain
+                ? UserRole.captain
+                : UserRole.citizen,
+        authProvider: provider ? AuthProvider.google : AuthProvider.password,
+        photoUrl: authUser.photoURL,
+      ));
+      return;
+    }
     final name = (profile['displayName'] as String?) ??
         authUser.displayName ??
         authUser.email?.split('@').first ??
@@ -414,126 +433,138 @@ class AppState extends ChangeNotifier {
       communityUpdates: profile['communityUpdates'] as bool? ?? true,
       streakReminders: profile['streakReminders'] as bool? ?? true,
     );
+    _setUser(loadedUser);
     if (isAdmin) {
-      _setUser(loadedUser);
       return;
     }
 
-    final results = await Future.wait([
-      _firestore
-          .collection('users')
-          .doc(authUser.uid)
-          .collection('footprints')
-          .get(),
-      _firestore
-          .collection('users')
-          .doc(authUser.uid)
-          .collection('taskLogs')
-          .where(
-            'date',
-            isGreaterThanOrEqualTo: Timestamp.fromDate(
-              DateTime(DateTime.now().year, DateTime.now().month,
-                  DateTime.now().day),
-            ),
-          )
-          .get(),
-      _firestore.collection('communities').limit(100).get(),
-      _firestore
-          .collection('users')
-          .doc(authUser.uid)
-          .collection('solarAssessments')
-          .orderBy('createdAt', descending: true)
-          .limit(20)
-          .get(),
-      _firestore
-          .collection('users')
-          .doc(authUser.uid)
-          .collection('surveyRequests')
-          .orderBy('createdAt', descending: true)
-          .limit(20)
-          .get(),
-    ]);
-    final footprintSnapshot = results[0];
-    final taskSnapshot = results[1];
-    final communitySnapshot = results[2];
-    final assessmentSnapshot = results[3];
-    final surveySnapshot = results[4];
-    _setUser(loadedUser);
-    _communities
-      ..clear()
-      ..addEntries(communitySnapshot.docs.map((document) => MapEntry(
-            document.id,
-            _communityFromDocument(document),
-          )));
-    _communityGoals.clear();
-    for (final document in communitySnapshot.docs) {
-      final goal = _goalFromCommunityDocument(document);
-      if (goal != null) _communityGoals[document.id] = goal;
-    }
-    if (loadedUser.communityId != null &&
-        !_communities.containsKey(loadedUser.communityId)) {
-      final activeCommunity = await _firestore
-          .collection('communities')
-          .doc(loadedUser.communityId)
-          .get();
-      final data = activeCommunity.data();
-      if (data == null) {
-        loadedUser.communityId = null;
-        await _firestore.collection('users').doc(authUser.uid).set(
-          {
-            'communityId': null,
-            'updatedAt': FieldValue.serverTimestamp(),
-          },
-          SetOptions(merge: true),
-        );
-      } else {
-        _communities[activeCommunity.id] =
-            _communityFromData(activeCommunity.id, data);
-        final goal = _goalFromCommunityData(activeCommunity.id, data);
-        if (goal != null) _communityGoals[activeCommunity.id] = goal;
+    try {
+      final results = await Future.wait([
+        _firestore
+            .collection('users')
+            .doc(authUser.uid)
+            .collection('footprints')
+            .get(),
+        _firestore
+            .collection('users')
+            .doc(authUser.uid)
+            .collection('taskLogs')
+            .where(
+              'date',
+              isGreaterThanOrEqualTo: Timestamp.fromDate(
+                DateTime(DateTime.now().year, DateTime.now().month,
+                    DateTime.now().day),
+              ),
+            )
+            .get(),
+        _firestore.collection('communities').limit(100).get(),
+        _firestore
+            .collection('users')
+            .doc(authUser.uid)
+            .collection('solarAssessments')
+            .orderBy('createdAt', descending: true)
+            .limit(20)
+            .get(),
+        _firestore
+            .collection('users')
+            .doc(authUser.uid)
+            .collection('surveyRequests')
+            .orderBy('createdAt', descending: true)
+            .limit(20)
+            .get(),
+      ]);
+      if (user?.uid != authUser.uid) return;
+
+      final footprintSnapshot = results[0];
+      final taskSnapshot = results[1];
+      final communitySnapshot = results[2];
+      final assessmentSnapshot = results[3];
+      final surveySnapshot = results[4];
+      _communities
+        ..clear()
+        ..addEntries(communitySnapshot.docs.map((document) => MapEntry(
+              document.id,
+              _communityFromDocument(document),
+            )));
+      _communityGoals.clear();
+      for (final document in communitySnapshot.docs) {
+        final goal = _goalFromCommunityDocument(document);
+        if (goal != null) _communityGoals[document.id] = goal;
       }
-    }
-    if (loadedUser.communityId != null &&
-        _communities.containsKey(loadedUser.communityId)) {
-      final memberSnapshot = await _firestore
-          .collection('communities')
-          .doc(loadedUser.communityId)
-          .collection('members')
-          .get();
-      final ownMember = memberSnapshot.docs
-          .where((document) => document.id == loadedUser.uid)
-          .firstOrNull;
-      final goal = _communityGoals[loadedUser.communityId];
-      if (goal != null) {
-        goal.progress = memberSnapshot.docs.fold<double>(
-          0,
-          (total, document) =>
-              total +
-              ((document.data()['goalContribution'] as num?)?.toDouble() ?? 0),
-        );
-        goal.myContribution =
-            (ownMember?.data()['goalContribution'] as num?)?.toDouble() ?? 0;
+      if (loadedUser.communityId != null &&
+          !_communities.containsKey(loadedUser.communityId)) {
+        final activeCommunity = await _firestore
+            .collection('communities')
+            .doc(loadedUser.communityId)
+            .get();
+        if (user?.uid != authUser.uid) return;
+        final data = activeCommunity.data();
+        if (data == null) {
+          loadedUser.communityId = null;
+          await _firestore.collection('users').doc(authUser.uid).set(
+            {
+              'communityId': null,
+              'updatedAt': FieldValue.serverTimestamp(),
+            },
+            SetOptions(merge: true),
+          );
+        } else {
+          _communities[activeCommunity.id] =
+              _communityFromData(activeCommunity.id, data);
+          final goal = _goalFromCommunityData(activeCommunity.id, data);
+          if (goal != null) _communityGoals[activeCommunity.id] = goal;
+        }
       }
+      if (loadedUser.communityId != null &&
+          _communities.containsKey(loadedUser.communityId)) {
+        final memberSnapshot = await _firestore
+            .collection('communities')
+            .doc(loadedUser.communityId)
+            .collection('members')
+            .get();
+        if (user?.uid != authUser.uid) return;
+        final ownMember = memberSnapshot.docs
+            .where((document) => document.id == loadedUser.uid)
+            .firstOrNull;
+        final goal = _communityGoals[loadedUser.communityId];
+        if (goal != null) {
+          goal.progress = memberSnapshot.docs.fold<double>(
+            0,
+            (total, document) =>
+                total +
+                ((document.data()['goalContribution'] as num?)?.toDouble() ??
+                    0),
+          );
+          goal.myContribution =
+              (ownMember?.data()['goalContribution'] as num?)?.toDouble() ?? 0;
+        }
+      }
+      notApplicable.addAll(
+        List<String>.from(
+          profile['notApplicableTaskIds'] as List? ?? const [],
+        ),
+      );
+      footprints
+        ..clear()
+        ..addAll(footprintSnapshot.docs.map(_footprintFromDocument))
+        ..sort((a, b) => a.month.compareTo(b.month));
+      taskLogs
+        ..clear()
+        ..addAll(taskSnapshot.docs.map(_taskLogFromDocument));
+      assessments
+        ..clear()
+        ..addAll(assessmentSnapshot.docs.map(_assessmentFromDocument));
+      myLeads
+        ..clear()
+        ..addAll(surveySnapshot.docs.map(_leadFromDocument));
+      notifyListeners();
+    } catch (error, stackTrace) {
+      FlutterError.reportError(FlutterErrorDetails(
+        exception: error,
+        stack: stackTrace,
+        library: 'Firebase account data loading',
+      ));
     }
-    notApplicable.addAll(
-      List<String>.from(
-        profile['notApplicableTaskIds'] as List? ?? const [],
-      ),
-    );
-    footprints
-      ..clear()
-      ..addAll(footprintSnapshot.docs.map(_footprintFromDocument))
-      ..sort((a, b) => a.month.compareTo(b.month));
-    taskLogs
-      ..clear()
-      ..addAll(taskSnapshot.docs.map(_taskLogFromDocument));
-    assessments
-      ..clear()
-      ..addAll(assessmentSnapshot.docs.map(_assessmentFromDocument));
-    myLeads
-      ..clear()
-      ..addAll(surveySnapshot.docs.map(_leadFromDocument));
-    notifyListeners();
   }
 
   TaskLog _taskLogFromDocument(
