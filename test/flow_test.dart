@@ -7,6 +7,8 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:life_mitra/app.dart';
 import 'package:life_mitra/core/widgets/widgets.dart';
 import 'package:life_mitra/data/app_state.dart';
+import 'package:life_mitra/data/models.dart';
+import 'package:life_mitra/data/mock_data.dart';
 
 /// Walks every citizen + admin route with the demo account to make sure each
 /// screen builds without throwing. (Fonts are not fetched in tests.)
@@ -79,15 +81,103 @@ void main() {
     }
 
     // Solar calculator end-to-end
-    final a = state.assess(monthlyUnits: 250, roofAreaM2: 30, scSt: false);
+    final a =
+        await state.assess(monthlyUnits: 250, roofAreaM2: 30, scSt: false);
     await go(tester, '/hub/solar/result/${a.id}');
     expect(find.textContaining('10,000'), findsWidgets);
 
     // Task completion awards points
     final before = state.user!.points;
     final task = state.todayTasks.first;
-    state.completeTask(task);
+    await state.completeTask(task);
     expect(state.user!.points, greaterThan(before));
+    expect(state.statusOf(task.id), TaskStatus.done);
+  });
+
+  test('daily task recommendations stay stable for the same account', () async {
+    final first = AppState();
+    final second = AppState();
+    addTearDown(first.dispose);
+    addTearDown(second.dispose);
+
+    expect(await first.signInWithEmail('nisha@demo.com', 'Demo@1234'), isNull);
+    expect(await second.signInWithEmail('nisha@demo.com', 'Demo@1234'), isNull);
+    expect(
+      first.todayTasks.map((task) => task.id).toList(),
+      second.todayTasks.map((task) => task.id).toList(),
+    );
+  });
+
+  test('demo community creation and joining still work', () async {
+    final creator = AppState();
+    final member = AppState();
+    addTearDown(creator.dispose);
+    addTearDown(member.dispose);
+
+    await creator.signUpWithEmail(
+      name: 'Community Creator',
+      email: 'creator@example.com',
+      password: 'Test@1234',
+    );
+    await member.signUpWithEmail(
+      name: 'Community Member',
+      email: 'member@example.com',
+      password: 'Test@1234',
+    );
+
+    final community = await creator.createCommunity(
+      name: 'Test Green Society',
+      type: 'Society',
+      pincode: '380015',
+    );
+    await member.joinCommunity(community);
+
+    expect(creator.myCommunity?.id, community.id);
+    expect(member.myCommunity?.id, community.id);
+    expect(community.memberCount, 2);
+  });
+
+  test('demo solar estimates and survey requests remain available', () async {
+    final state = AppState();
+    addTearDown(state.dispose);
+    expect(await state.signInWithEmail('nisha@demo.com', 'Demo@1234'), isNull);
+
+    final assessment = await state.assess(
+      monthlyUnits: 250,
+      roofAreaM2: 30,
+      scSt: false,
+    );
+    expect(state.assessmentById(assessment.id), same(assessment));
+
+    final request = await state.requestSurvey(
+      assessment: assessment,
+      phone: '9876543210',
+      preferredSlot: 'Weekend',
+    );
+    expect(state.myLeads, contains(request));
+    expect(request.phone, '9876543210');
+    expect(request.preferredSlot, 'Weekend');
+  });
+
+  test('demo admin lead status updates remain available', () async {
+    final state = AppState();
+    addTearDown(state.dispose);
+    await state.signInWithEmail('admin@geda.demo', 'Admin@1234');
+    await state.loadAdminLeads();
+    final lead = state.adminLeads.first;
+    final previousStatus = lead.status;
+    addTearDown(() {
+      MockData.leads.firstWhere((item) => item.id == lead.id).status =
+          previousStatus;
+    });
+
+    await state.updateLeadStatus(lead, 'contacted');
+
+    expect(lead.status, 'contacted');
+    expect(
+      MockData.leads.firstWhere((item) => item.id == lead.id).status,
+      'contacted',
+    );
   });
 
   testWidgets('onboarding gate: new user is sent to /onboarding/1',

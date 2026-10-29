@@ -22,6 +22,44 @@ class AuthChanges extends ChangeNotifier {
   void bump() => notifyListeners();
 }
 
+Community _communityFromDocument(
+    QueryDocumentSnapshot<Map<String, dynamic>> document) {
+  return _communityFromData(document.id, document.data());
+}
+
+Community _communityFromData(String id, Map<String, dynamic> data) {
+  return Community(
+    id: id,
+    name: data['name'] as String,
+    type: data['type'] as String,
+    district: data['district'] as String,
+    pincode: data['pincode'] as String,
+    memberCount: data['memberCount'] as int? ?? 1,
+    joinCode: data['joinCode'] as String,
+    totalUnitsSaved: (data['totalUnitsSaved'] as num?)?.toDouble() ?? 0,
+  );
+}
+
+CommunityGoal? _goalFromCommunityDocument(
+    QueryDocumentSnapshot<Map<String, dynamic>> document) {
+  return _goalFromCommunityData(document.id, document.data());
+}
+
+CommunityGoal? _goalFromCommunityData(String id, Map<String, dynamic> data) {
+  final endDate = data['goalEndDate'];
+  if (data['goalTitle'] is! String || endDate is! Timestamp) return null;
+  return CommunityGoal(
+    id: id,
+    communityId: id,
+    title: data['goalTitle'] as String,
+    metric: data['goalMetric'] as String? ?? 'units',
+    target: (data['goalTarget'] as num?)?.toDouble() ?? 100,
+    progress: 0,
+    endDate: endDate.toDate(),
+    bonusPoints: 0,
+  );
+}
+
 class AppState extends ChangeNotifier {
   final AuthChanges authChanges = AuthChanges();
   AppState({this.useFirebase = false}) {
@@ -62,6 +100,10 @@ class AppState extends ChangeNotifier {
   AppUser? user;
   final Map<String, (String password, AppUser user)> _accounts = {};
   bool get isSignedIn => user != null;
+  final Map<String, Community> _communities = {};
+  final Map<String, CommunityGoal> _communityGoals = {};
+  List<Community> get communities =>
+      useFirebase ? _communities.values.toList() : MockData.communities;
 
   void _seedDemoAccounts() {
     final nisha = AppUser(
@@ -250,14 +292,17 @@ class AppState extends ChangeNotifier {
     return switch (error.code) {
       'email-already-in-use' => 'email-already-in-use',
       'invalid-email' => 'Enter a valid email address.',
-      'invalid-credential' || 'wrong-password' || 'user-not-found' =>
+      'invalid-credential' ||
+      'wrong-password' ||
+      'user-not-found' =>
         'Email or password is incorrect.',
       'weak-password' => 'Choose a stronger password.',
       'user-disabled' => 'This account has been disabled.',
       'too-many-requests' => 'Too many attempts. Please try again later.',
       'network-request-failed' =>
         'Network error. Check your connection and try again.',
-      'popup-closed-by-user' || 'web-context-cancelled' =>
+      'popup-closed-by-user' ||
+      'web-context-cancelled' =>
         'Google sign-in was cancelled.',
       _ => error.message ?? 'Authentication failed (${error.code}).',
     };
@@ -279,7 +324,7 @@ class AppState extends ChangeNotifier {
           'Citizen',
       'role': 'citizen',
       'authProvider': authUser.providerData
-          .any((provider) => provider.providerId == 'google.com')
+              .any((provider) => provider.providerId == 'google.com')
           ? 'google'
           : 'password',
       'onboardingComplete': false,
@@ -300,18 +345,19 @@ class AppState extends ChangeNotifier {
     }
 
     await _writeInitialProfile(authUser);
-    final results = await Future.wait([
+    final identityResults = await Future.wait([
       _firestore.collection('users').doc(authUser.uid).get(),
-      authUser.getIdTokenResult(),
+      authUser.getIdTokenResult(true),
     ]);
     final profile =
-        (results[0] as DocumentSnapshot<Map<String, dynamic>>).data() ?? {};
+        (identityResults[0] as DocumentSnapshot<Map<String, dynamic>>).data() ??
+            {};
     final claims =
-        (results[1] as firebase_auth.IdTokenResult).claims ?? {};
+        (identityResults[1] as firebase_auth.IdTokenResult).claims ?? {};
     final isAdmin = claims['admin'] == true;
     final isCaptain = claims['captain'] == true;
-    final provider = authUser.providerData
-        .any((info) => info.providerId == 'google.com');
+    final provider =
+        authUser.providerData.any((info) => info.providerId == 'google.com');
     final name = (profile['displayName'] as String?) ??
         authUser.displayName ??
         authUser.email?.split('@').first ??
@@ -333,8 +379,8 @@ class AppState extends ChangeNotifier {
       householdSize: profile['householdSize'] as int? ?? 4,
       homeType: profile['homeType'] as String? ?? 'flat',
       roofAccess: profile['roofAccess'] as String? ?? 'yes',
-      appliances: List<String>.from(
-          profile['appliances'] as List? ?? const ['ac', 'fridge', 'washing_machine', 'geyser']),
+      appliances: List<String>.from(profile['appliances'] as List? ??
+          const ['ac', 'fridge', 'washing_machine', 'geyser']),
       travelMode: profile['travelMode'] as String? ?? 'two_wheeler',
       weeklyKm: (profile['weeklyKm'] as num?)?.toDouble() ?? 70,
       baselineUnits: (profile['baselineUnits'] as num?)?.toDouble() ?? 250,
@@ -353,7 +399,199 @@ class AppState extends ChangeNotifier {
       communityUpdates: profile['communityUpdates'] as bool? ?? true,
       streakReminders: profile['streakReminders'] as bool? ?? true,
     );
+    if (isAdmin) {
+      _setUser(loadedUser);
+      return;
+    }
+
+    final results = await Future.wait([
+      _firestore
+          .collection('users')
+          .doc(authUser.uid)
+          .collection('footprints')
+          .get(),
+      _firestore
+          .collection('users')
+          .doc(authUser.uid)
+          .collection('taskLogs')
+          .where(
+            'date',
+            isGreaterThanOrEqualTo: Timestamp.fromDate(
+              DateTime(DateTime.now().year, DateTime.now().month,
+                  DateTime.now().day),
+            ),
+          )
+          .get(),
+      _firestore.collection('communities').limit(100).get(),
+      _firestore
+          .collection('users')
+          .doc(authUser.uid)
+          .collection('solarAssessments')
+          .orderBy('createdAt', descending: true)
+          .limit(20)
+          .get(),
+      _firestore
+          .collection('users')
+          .doc(authUser.uid)
+          .collection('surveyRequests')
+          .orderBy('createdAt', descending: true)
+          .limit(20)
+          .get(),
+    ]);
+    final footprintSnapshot = results[0];
+    final taskSnapshot = results[1];
+    final communitySnapshot = results[2];
+    final assessmentSnapshot = results[3];
+    final surveySnapshot = results[4];
     _setUser(loadedUser);
+    _communities
+      ..clear()
+      ..addEntries(communitySnapshot.docs.map((document) => MapEntry(
+            document.id,
+            _communityFromDocument(document),
+          )));
+    _communityGoals.clear();
+    for (final document in communitySnapshot.docs) {
+      final goal = _goalFromCommunityDocument(document);
+      if (goal != null) _communityGoals[document.id] = goal;
+    }
+    if (loadedUser.communityId != null &&
+        !_communities.containsKey(loadedUser.communityId)) {
+      final activeCommunity = await _firestore
+          .collection('communities')
+          .doc(loadedUser.communityId)
+          .get();
+      final data = activeCommunity.data();
+      if (data == null) {
+        loadedUser.communityId = null;
+        await _firestore.collection('users').doc(authUser.uid).set(
+          {
+            'communityId': null,
+            'updatedAt': FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true),
+        );
+      } else {
+        _communities[activeCommunity.id] =
+            _communityFromData(activeCommunity.id, data);
+        final goal = _goalFromCommunityData(activeCommunity.id, data);
+        if (goal != null) _communityGoals[activeCommunity.id] = goal;
+      }
+    }
+    if (loadedUser.communityId != null &&
+        _communities.containsKey(loadedUser.communityId)) {
+      final memberSnapshot = await _firestore
+          .collection('communities')
+          .doc(loadedUser.communityId)
+          .collection('members')
+          .get();
+      final ownMember = memberSnapshot.docs
+          .where((document) => document.id == loadedUser.uid)
+          .firstOrNull;
+      final goal = _communityGoals[loadedUser.communityId];
+      if (goal != null) {
+        goal.progress = memberSnapshot.docs.fold<double>(
+          0,
+          (total, document) =>
+              total +
+              ((document.data()['goalContribution'] as num?)?.toDouble() ?? 0),
+        );
+        goal.myContribution =
+            (ownMember?.data()['goalContribution'] as num?)?.toDouble() ?? 0;
+      }
+    }
+    notApplicable.addAll(
+      List<String>.from(
+        profile['notApplicableTaskIds'] as List? ?? const [],
+      ),
+    );
+    footprints
+      ..clear()
+      ..addAll(footprintSnapshot.docs.map(_footprintFromDocument))
+      ..sort((a, b) => a.month.compareTo(b.month));
+    taskLogs
+      ..clear()
+      ..addAll(taskSnapshot.docs.map(_taskLogFromDocument));
+    assessments
+      ..clear()
+      ..addAll(assessmentSnapshot.docs.map(_assessmentFromDocument));
+    myLeads
+      ..clear()
+      ..addAll(surveySnapshot.docs.map(_leadFromDocument));
+    notifyListeners();
+  }
+
+  TaskLog _taskLogFromDocument(
+      QueryDocumentSnapshot<Map<String, dynamic>> document) {
+    final data = document.data();
+    final date = data['date'] as Timestamp;
+    return TaskLog(
+      taskId: data['taskId'] as String,
+      date: date.toDate(),
+      status: TaskStatus.values.byName(data['status'] as String),
+    );
+  }
+
+  FootprintEntry _footprintFromDocument(
+      QueryDocumentSnapshot<Map<String, dynamic>> document) {
+    final data = document.data();
+    final timestamp = data['month'];
+    final month = timestamp is Timestamp
+        ? timestamp.toDate()
+        : DateTime.tryParse(document.id.replaceFirst('baseline_', '')) ??
+            DateTime.now();
+    return FootprintEntry(
+      month: DateTime(month.year, month.month),
+      electricityUnits: (data['electricityUnits'] as num?)?.toDouble() ?? 0,
+      electricityKg: (data['electricityKg'] as num?)?.toDouble() ?? 0,
+      cookingKg: (data['cookingKg'] as num?)?.toDouble() ?? 0,
+      transportKg: (data['transportKg'] as num?)?.toDouble() ?? 0,
+      source: data['source'] as String? ?? 'manual',
+      isBaseline: data['isBaseline'] as bool? ?? false,
+      unitsSaved: (data['unitsSaved'] as num?)?.toDouble() ?? 0,
+      rupeesSaved: (data['rupeesSaved'] as num?)?.toDouble() ?? 0,
+      percentChange: (data['percentChange'] as num?)?.toDouble() ?? 0,
+      pointsAwarded: data['pointsAwarded'] as int? ?? 0,
+    );
+  }
+
+  SolarAssessment _assessmentFromDocument(
+      QueryDocumentSnapshot<Map<String, dynamic>> document) {
+    final data = document.data();
+    return SolarAssessment(
+      id: document.id,
+      monthlyUnits: (data['monthlyUnits'] as num).toDouble(),
+      roofAreaM2: (data['roofAreaM2'] as num).toDouble(),
+      category: data['category'] as String,
+      sizeKw: (data['sizeKw'] as num).toDouble(),
+      annualGenUnits: (data['annualGenUnits'] as num).toDouble(),
+      grossCost: (data['grossCost'] as num).toDouble(),
+      centralSubsidy: (data['centralSubsidy'] as num).toDouble(),
+      stateSubsidy: (data['stateSubsidy'] as num).toDouble(),
+      netCost: (data['netCost'] as num).toDouble(),
+      annualSavings: (data['annualSavings'] as num).toDouble(),
+      paybackYears: (data['paybackYears'] as num?)?.toDouble(),
+      co2Avoided25yKg: (data['co2Avoided25yKg'] as num).toDouble(),
+      createdAt: (data['createdAt'] as Timestamp).toDate(),
+    );
+  }
+
+  Lead _leadFromDocument(QueryDocumentSnapshot<Map<String, dynamic>> document) {
+    final data = document.data();
+    return Lead(
+      id: document.id,
+      userName: data['userName'] as String,
+      district: data['district'] as String,
+      sizeKw: (data['sizeKw'] as num).toDouble(),
+      netCost: (data['netCost'] as num).toDouble(),
+      type: data['type'] as String,
+      createdAt: (data['createdAt'] as Timestamp).toDate(),
+      vendorName: data['vendorName'] as String?,
+      status: data['status'] as String? ?? 'new',
+      phone: data['phone'] as String?,
+      preferredSlot: data['preferredSlot'] as String?,
+      ownerUid: document.reference.parent.parent?.id,
+    );
   }
 
   void _setUser(AppUser u) {
@@ -370,6 +608,7 @@ class AppState extends ChangeNotifier {
   final List<PointsEntry> ledger = [];
   final List<SolarAssessment> assessments = [];
   final List<Lead> myLeads = [];
+  final List<Lead> adminLeads = [];
   final Set<String> notApplicable = {};
   final Set<String> dismissedNudges = {};
   int pointsTodaySelf = 0;
@@ -380,8 +619,11 @@ class AppState extends ChangeNotifier {
     ledger.clear();
     assessments.clear();
     myLeads.clear();
+    adminLeads.clear();
     notApplicable.clear();
     dismissedNudges.clear();
+    _communities.clear();
+    _communityGoals.clear();
     pointsTodaySelf = 0;
   }
 
@@ -471,7 +713,7 @@ class AppState extends ChangeNotifier {
     required List<String> appliances,
     required int goalPercent,
     required String source,
-  }) {
+  }) async {
     final u = user!;
     final input = FootprintInput(
       electricityUnits: electricityUnits,
@@ -483,8 +725,7 @@ class AppState extends ChangeNotifier {
     final month = DateTime(DateTime.now().year, DateTime.now().month);
     if (useFirebase) {
       final uid = user!.uid;
-      final monthId =
-          '${month.year}-${month.month.toString().padLeft(2, '0')}';
+      final monthId = '${month.year}-${month.month.toString().padLeft(2, '0')}';
       final batch = _firestore.batch();
       batch.set(
         _firestore.collection('users').doc(uid),
@@ -510,7 +751,7 @@ class AppState extends ChangeNotifier {
             .collection('users')
             .doc(uid)
             .collection('footprints')
-            .doc(monthId),
+            .doc('baseline_$monthId'),
         {
           'month': Timestamp.fromDate(month),
           'electricityUnits': electricityUnits,
@@ -563,7 +804,12 @@ class AppState extends ChangeNotifier {
   List<TaskItem> get todayTasks {
     final u = user;
     if (u == null) return const [];
-    final seed = u.uid.hashCode ^ DateTime.now().day;
+    final today = DateTime.now();
+    var seed = 0x811c9dc5;
+    for (final codeUnit
+        in '${u.uid}:${today.year}-${today.month}-${today.day}'.codeUnits) {
+      seed = ((seed ^ codeUnit) * 0x01000193) & 0x7fffffff;
+    }
     final rnd = Random(seed);
     final pool = MockData.tasks.where((t) {
       if (notApplicable.contains(t.id)) return false;
@@ -614,9 +860,113 @@ class AppState extends ChangeNotifier {
   int get tasksDoneToday =>
       todayTasks.where((t) => statusOf(t.id) == TaskStatus.done).length;
 
+  Future<void> _saveTaskStatus(
+      TaskItem task, DateTime date, TaskStatus status) async {
+    if (!useFirebase) return;
+    await _taskLogReference(task, date).set({
+      'taskId': task.id,
+      'date': Timestamp.fromDate(_dayStart(date)),
+      'status': status.name,
+    }, SetOptions(merge: true));
+  }
+
+  DateTime _dayStart(DateTime date) =>
+      DateTime(date.year, date.month, date.day);
+
+  DocumentReference<Map<String, dynamic>> _taskLogReference(
+      TaskItem task, DateTime date) {
+    final day = _dayStart(date);
+    final dayId =
+        '${day.year}-${day.month.toString().padLeft(2, '0')}-${day.day.toString().padLeft(2, '0')}';
+    return _firestore
+        .collection('users')
+        .doc(user!.uid)
+        .collection('taskLogs')
+        .doc('${dayId}_${task.id}');
+  }
+
   /// Completes a task. Returns a result describing points and unlocks.
-  /// Firestore batch: taskLogs + pointsLedger + users + communities + goals + adminMetrics (backendschema §6.1)
-  TaskCompletion completeTask(TaskItem task, {bool withPhoto = false}) {
+  Future<TaskCompletion> completeTask(TaskItem task,
+      {bool withPhoto = false}) async {
+    if (useFirebase) {
+      final now = DateTime.now();
+      final communityId = user?.communityId;
+      final goal = communityId == null ? null : myGoal;
+      final contribution = goal == null
+          ? 0.0
+          : goal.metric == 'tasks'
+              ? 1.0
+              : goal.metric == 'units'
+                  ? task.estUnitsSaved
+                  : task.estCo2Kg;
+      final taskLog = _taskLogReference(task, now);
+      final member = communityId == null
+          ? null
+          : _firestore
+              .collection('communities')
+              .doc(communityId)
+              .collection('members')
+              .doc(user!.uid);
+      if (member == null || goal == null || contribution <= 0) {
+        await _saveTaskStatus(task, now, TaskStatus.done);
+      } else {
+        final completed =
+            await _firestore.runTransaction<bool>((transaction) async {
+          final logSnapshot = await transaction.get(taskLog);
+          final memberSnapshot = await transaction.get(member);
+          if (logSnapshot.data()?['status'] == TaskStatus.done.name) {
+            return false;
+          }
+          if (!memberSnapshot.exists) {
+            throw StateError('Your community membership was not found.');
+          }
+          final current = (memberSnapshot.data()?['goalContribution'] as num?)
+                  ?.toDouble() ??
+              0;
+          transaction.set(
+            taskLog,
+            {
+              'taskId': task.id,
+              'date': Timestamp.fromDate(_dayStart(now)),
+              'status': TaskStatus.done.name,
+            },
+            SetOptions(merge: true),
+          );
+          transaction.update(member, {
+            'goalContribution': min(goal.target, current + contribution),
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+          return true;
+        });
+        if (completed) {
+          final members = await member.parent.get();
+          goal.progress = members.docs.fold<double>(
+            0,
+            (total, document) =>
+                total +
+                ((document.data()['goalContribution'] as num?)?.toDouble() ??
+                    0),
+          );
+          goal.myContribution =
+              ((await member.get()).data()?['goalContribution'] as num?)
+                      ?.toDouble() ??
+                  goal.myContribution;
+        }
+      }
+      taskLogs.removeWhere((log) =>
+          log.taskId == task.id &&
+          log.date.year == now.year &&
+          log.date.month == now.month &&
+          log.date.day == now.day);
+      taskLogs.add(TaskLog(
+        taskId: task.id,
+        date: now,
+        status: TaskStatus.done,
+      ));
+      notifyListeners();
+      return const TaskCompletion(points: 0, capped: false);
+    }
+
     final u = user!;
     var points = task.points + (withPhoto ? config.photoBonus : 0);
     var capped = false;
@@ -689,18 +1039,44 @@ class AppState extends ChangeNotifier {
     );
   }
 
-  void skipTask(TaskItem task) {
-    taskLogs.add(TaskLog(
-        taskId: task.id, date: DateTime.now(), status: TaskStatus.skipped));
+  Future<void> skipTask(TaskItem task) async {
+    final now = DateTime.now();
+    await _saveTaskStatus(task, now, TaskStatus.skipped);
+    taskLogs
+        .add(TaskLog(taskId: task.id, date: now, status: TaskStatus.skipped));
     notifyListeners();
   }
 
-  void markNotApplicable(TaskItem task) {
+  Future<void> markNotApplicable(TaskItem task) async {
+    final now = DateTime.now();
+    if (useFirebase) {
+      final batch = _firestore.batch();
+      final userRef = _firestore.collection('users').doc(user!.uid);
+      final day = DateTime(now.year, now.month, now.day);
+      final dayId =
+          '${day.year}-${day.month.toString().padLeft(2, '0')}-${day.day.toString().padLeft(2, '0')}';
+      batch.set(
+        userRef.collection('taskLogs').doc('${dayId}_${task.id}'),
+        {
+          'taskId': task.id,
+          'date': Timestamp.fromDate(day),
+          'status': TaskStatus.notApplicable.name,
+        },
+        SetOptions(merge: true),
+      );
+      batch.set(
+        userRef,
+        {
+          'notApplicableTaskIds': FieldValue.arrayUnion([task.id]),
+          'updatedAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
+      await batch.commit();
+    }
     notApplicable.add(task.id);
-    taskLogs.add(TaskLog(
-        taskId: task.id,
-        date: DateTime.now(),
-        status: TaskStatus.notApplicable));
+    taskLogs.add(
+        TaskLog(taskId: task.id, date: now, status: TaskStatus.notApplicable));
     notifyListeners();
   }
 
@@ -739,10 +1115,10 @@ class AppState extends ChangeNotifier {
       .fold(0, (s, f) => s + max(0, (baseline?.co2Kg ?? 0) - f.co2Kg));
 
   /// Writes: footprints + (bill) pointsLedger/users + adminMetrics (backendschema §6.2)
-  int addMonth(
+  Future<int> addMonth(
       {required DateTime month,
       required double units,
-      required bool fromBill}) {
+      required bool fromBill}) async {
     final u = user!;
     final b = baseline;
     final r = footprintCalc.calculate(FootprintInput(
@@ -751,23 +1127,51 @@ class AppState extends ChangeNotifier {
       petrolL: (b?.transportKg ?? 0) / config.factors.petrol,
     ));
     final saved = max(0.0, u.baselineUnits - units);
-    final points = fromBill ? (saved * config.pointsPerUnitSaved).round() : 0;
-    footprints.removeWhere((f) =>
-        f.month.year == month.year &&
-        f.month.month == month.month &&
-        !f.isBaseline);
-    footprints.add(FootprintEntry(
+    final points = useFirebase
+        ? 0
+        : fromBill
+            ? (saved * config.pointsPerUnitSaved).round()
+            : 0;
+    final entry = FootprintEntry(
       month: month,
       electricityUnits: units,
       electricityKg: r.electricityKg,
       cookingKg: r.cookingKg,
       transportKg: r.transportKg,
-      source: fromBill ? 'bill' : 'manual',
+      source: !useFirebase && fromBill ? 'bill' : 'manual',
       unitsSaved: saved,
       rupeesSaved: saved * config.avgTariffPerUnit,
       percentChange: b == null ? 0 : (r.totalKg - b.co2Kg) / b.co2Kg * 100,
       pointsAwarded: points,
-    ));
+    );
+    if (useFirebase) {
+      final monthId = '${month.year}-${month.month.toString().padLeft(2, '0')}';
+      await _firestore
+          .collection('users')
+          .doc(u.uid)
+          .collection('footprints')
+          .doc('entry_$monthId')
+          .set({
+        'month': Timestamp.fromDate(DateTime(month.year, month.month)),
+        'electricityUnits': entry.electricityUnits,
+        'electricityKg': entry.electricityKg,
+        'cookingKg': entry.cookingKg,
+        'transportKg': entry.transportKg,
+        'source': entry.source,
+        'isBaseline': false,
+        'unitsSaved': entry.unitsSaved,
+        'rupeesSaved': entry.rupeesSaved,
+        'percentChange': entry.percentChange,
+        'pointsAwarded': 0,
+        'createdAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    }
+
+    footprints.removeWhere((f) =>
+        f.month.year == month.year &&
+        f.month.month == month.month &&
+        !f.isBaseline);
+    footprints.add(entry);
     footprints.sort((a, b) => a.month.compareTo(b.month));
     if (points > 0) {
       u.points += points;
@@ -790,21 +1194,149 @@ class AppState extends ChangeNotifier {
   // ---------- Community ----------
   Community? get myCommunity => user?.communityId == null
       ? null
-      : MockData.communityById(user!.communityId!);
+      : useFirebase
+          ? _communities[user!.communityId]
+          : MockData.communityById(user!.communityId!);
   CommunityGoal? get myGoal => user?.communityId == null
       ? null
-      : MockData.goals
-          .where((g) => g.communityId == user!.communityId)
-          .firstOrNull;
+      : useFirebase
+          ? _communityGoals[user!.communityId]
+          : MockData.goals
+              .where((g) => g.communityId == user!.communityId)
+              .firstOrNull;
 
-  void joinCommunity(Community c) {
+  CommunityGoal? goalById(String id) => useFirebase
+      ? _communityGoals[id]
+      : MockData.goals.where((goal) => goal.id == id).firstOrNull;
+
+  Community? communityById(String id) =>
+      useFirebase ? _communities[id] : MockData.communityById(id);
+
+  Future<Community?> communityByJoinCode(String code) async {
+    if (!useFirebase) {
+      return MockData.communities
+          .where((community) => community.joinCode == code)
+          .firstOrNull;
+    }
+    final result = await _firestore
+        .collection('communities')
+        .where('joinCode', isEqualTo: code)
+        .limit(1)
+        .get();
+    if (result.docs.isEmpty) return null;
+    final community = _communityFromDocument(result.docs.first);
+    _communities[community.id] = community;
+    final goal = _goalFromCommunityDocument(result.docs.first);
+    if (goal != null) _communityGoals[community.id] = goal;
+    notifyListeners();
+    return community;
+  }
+
+  Future<void> refreshCommunities() async {
+    if (!useFirebase) return;
+    final snapshot =
+        await _firestore.collection('communities').limit(100).get();
+    _communities
+      ..clear()
+      ..addEntries(snapshot.docs.map((document) => MapEntry(
+            document.id,
+            _communityFromDocument(document),
+          )));
+    _communityGoals.clear();
+    for (final document in snapshot.docs) {
+      final goal = _goalFromCommunityDocument(document);
+      if (goal != null) _communityGoals[document.id] = goal;
+    }
+    notifyListeners();
+  }
+
+  Future<void> refreshCommunityProgress() async {
+    final communityId = user?.communityId;
+    final goal = myGoal;
+    if (!useFirebase || communityId == null || goal == null) return;
+    final members = await _firestore
+        .collection('communities')
+        .doc(communityId)
+        .collection('members')
+        .get();
+    goal.progress = members.docs.fold<double>(
+      0,
+      (total, document) =>
+          total +
+          ((document.data()['goalContribution'] as num?)?.toDouble() ?? 0),
+    );
+    final own =
+        members.docs.where((document) => document.id == user!.uid).firstOrNull;
+    goal.myContribution =
+        (own?.data()['goalContribution'] as num?)?.toDouble() ?? 0;
+    notifyListeners();
+  }
+
+  Future<void> joinCommunity(Community c) async {
+    final currentUser = user!;
+    if (useFirebase) {
+      final communityRef = _firestore.collection('communities').doc(c.id);
+      final memberRef = communityRef.collection('members').doc(currentUser.uid);
+      final userRef = _firestore.collection('users').doc(currentUser.uid);
+      await _firestore.runTransaction((transaction) async {
+        final communitySnapshot = await transaction.get(communityRef);
+        final memberSnapshot = await transaction.get(memberRef);
+        if (!communitySnapshot.exists) {
+          throw StateError('This community no longer exists.');
+        }
+        if (memberSnapshot.exists) {
+          throw StateError('You are already a member of this community.');
+        }
+        transaction.set(memberRef, {
+          'uid': currentUser.uid,
+          'goalContribution': 0,
+          'joinedAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+        transaction.update(communityRef, {
+          'memberCount': FieldValue.increment(1),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+        transaction.update(userRef, {
+          'communityId': c.id,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      });
+      final data =
+          (await _firestore.collection('communities').doc(c.id).get()).data();
+      if (data != null) {
+        _communities[c.id] = _communityFromData(c.id, data);
+        final goal = _goalFromCommunityData(c.id, data);
+        if (goal != null) {
+          _communityGoals[c.id] = goal;
+          final members = await memberRef.parent.get();
+          goal.progress = members.docs.fold<double>(
+            0,
+            (total, document) =>
+                total +
+                ((document.data()['goalContribution'] as num?)?.toDouble() ??
+                    0),
+          );
+          goal.myContribution = (members.docs
+                      .where((document) => document.id == currentUser.uid)
+                      .firstOrNull
+                      ?.data()['goalContribution'] as num?)
+                  ?.toDouble() ??
+              0;
+        }
+      }
+      currentUser.communityId = c.id;
+      notifyListeners();
+      return;
+    }
     user!.communityId = c.id;
     c.memberCount += 1;
     notifyListeners();
   }
 
-  Community createCommunity(
+  Future<Community> createCommunity(
       {required String name, required String type, required String pincode}) {
+    if (useFirebase) return _createFirestoreCommunity(name, type, pincode);
     final c = Community(
       id: 'c_${Random().nextInt(1 << 30)}',
       name: name,
@@ -821,7 +1353,7 @@ class AppState extends ChangeNotifier {
     );
     MockData.communities.insert(0, c);
     user!.communityId = c.id;
-    if (!user!.badges.contains('community_builder')) {
+    if (!useFirebase && !user!.badges.contains('community_builder')) {
       user!.badges = [...user!.badges, 'community_builder'];
       user!.points += 50;
       ledger.insert(
@@ -833,14 +1365,86 @@ class AppState extends ChangeNotifier {
               icon: Icons.groups_rounded));
     }
     notifyListeners();
-    return c;
+    return Future.value(c);
+  }
+
+  Future<Community> _createFirestoreCommunity(
+      String name, String type, String pincode) async {
+    final currentUser = user!;
+    final communityRef = _firestore.collection('communities').doc();
+    final userRef = _firestore.collection('users').doc(currentUser.uid);
+    final now = DateTime.now();
+    final goalEndDate = DateTime(now.year, now.month + 1, 0, 23, 59, 59);
+    final joinCode = (name
+            .replaceAll(RegExp(r'[^A-Za-z]'), '')
+            .toUpperCase()
+            .padRight(4, 'X')
+            .substring(0, 4)) +
+        Random()
+            .nextInt(1 << 20)
+            .toRadixString(36)
+            .padLeft(4, '0')
+            .toUpperCase();
+    final batch = _firestore.batch();
+    batch.set(communityRef, {
+      'name': name.trim(),
+      'type': type,
+      'district': MockData.districtFromPin(pincode),
+      'pincode': pincode,
+      'joinCode': joinCode,
+      'createdBy': currentUser.uid,
+      'memberCount': 1,
+      'totalUnitsSaved': 0,
+      'goalTitle': 'Save 100 units this month',
+      'goalMetric': 'units',
+      'goalTarget': 100,
+      'goalEndDate': Timestamp.fromDate(goalEndDate),
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+    batch.set(communityRef.collection('members').doc(currentUser.uid), {
+      'uid': currentUser.uid,
+      'goalContribution': 0,
+      'joinedAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+    batch.update(userRef, {
+      'communityId': communityRef.id,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+
+    final community = Community(
+      id: communityRef.id,
+      name: name.trim(),
+      type: type,
+      district: MockData.districtFromPin(pincode),
+      pincode: pincode,
+      memberCount: 1,
+      joinCode: joinCode,
+    );
+    _communities[community.id] = community;
+    _communityGoals[community.id] = CommunityGoal(
+      id: community.id,
+      communityId: community.id,
+      title: 'Save 100 units this month',
+      metric: 'units',
+      target: 100,
+      progress: 0,
+      endDate: goalEndDate,
+      bonusPoints: 0,
+    );
+    currentUser.communityId = community.id;
+    notifyListeners();
+    return community;
   }
 
   List<LeaderboardEntry> leaderboard(String scope, {bool weekly = false}) {
     final u = user!;
     final myPoints = weekly ? u.weeklyPoints : u.points;
     final factor = weekly ? 0.12 : 1.0;
-    var names = MockData.leaderboardNames;
+    var names =
+        useFirebase ? <(String, String, int)>[] : MockData.leaderboardNames;
     if (scope == 'district') {
       names = names.where((n) => n.$2 == u.district).toList();
     }
@@ -861,10 +1465,10 @@ class AppState extends ChangeNotifier {
   }
 
   // ---------- Solar ----------
-  SolarAssessment assess(
+  Future<SolarAssessment> assess(
       {required double monthlyUnits,
       required double roofAreaM2,
-      required bool scSt}) {
+      required bool scSt}) async {
     final r = solarCalc.calculate(
         monthlyUnits: monthlyUnits, roofAreaM2: roofAreaM2, scSt: scSt);
     final a = SolarAssessment(
@@ -883,21 +1487,57 @@ class AppState extends ChangeNotifier {
       co2Avoided25yKg: r.co2Avoided25yKg,
       createdAt: DateTime.now(),
     );
+    if (useFirebase) {
+      await _firestore
+          .collection('users')
+          .doc(user!.uid)
+          .collection('solarAssessments')
+          .doc(a.id)
+          .set({
+        'monthlyUnits': a.monthlyUnits,
+        'roofAreaM2': a.roofAreaM2,
+        'category': a.category,
+        'sizeKw': a.sizeKw,
+        'annualGenUnits': a.annualGenUnits,
+        'grossCost': a.grossCost,
+        'centralSubsidy': a.centralSubsidy,
+        'stateSubsidy': a.stateSubsidy,
+        'netCost': a.netCost,
+        'annualSavings': a.annualSavings,
+        'paybackYears': a.paybackYears,
+        'co2Avoided25yKg': a.co2Avoided25yKg,
+        'createdAt': Timestamp.fromDate(a.createdAt),
+      });
+    }
     assessments.insert(0, a);
     if (statusOf('solar_assessment') != TaskStatus.done && user != null) {
-      taskLogs.add(TaskLog(
+      final now = DateTime.now();
+      if (useFirebase) {
+        await _saveTaskStatus(
+          MockData.taskById('solar_assessment'),
+          now,
+          TaskStatus.done,
+        );
+        taskLogs.add(TaskLog(
           taskId: 'solar_assessment',
-          date: DateTime.now(),
+          date: now,
           status: TaskStatus.done,
-          pointsAwarded: 20));
-      user!.points += 20;
-      ledger.insert(
-          0,
-          PointsEntry(
-              delta: 20,
-              reason: 'Solar feasibility checked',
-              createdAt: DateTime.now(),
-              icon: Icons.wb_sunny_rounded));
+        ));
+      } else {
+        taskLogs.add(TaskLog(
+            taskId: 'solar_assessment',
+            date: now,
+            status: TaskStatus.done,
+            pointsAwarded: 20));
+        user!.points += 20;
+        ledger.insert(
+            0,
+            PointsEntry(
+                delta: 20,
+                reason: 'Solar feasibility checked',
+                createdAt: now,
+                icon: Icons.wb_sunny_rounded));
+      }
     }
     notifyListeners();
     return a;
@@ -906,11 +1546,12 @@ class AppState extends ChangeNotifier {
   SolarAssessment? assessmentById(String id) =>
       assessments.where((a) => a.id == id).firstOrNull;
 
-  /// Writes: leads + pointsLedger + users.badges + adminMetrics (backendschema §6.3)
-  Lead requestSurvey(
+  /// Saves the user's survey request; online requests are not routed to vendors.
+  Future<Lead> requestSurvey(
       {SolarAssessment? assessment,
       Vendor? vendor,
       required String phone,
+      required String preferredSlot,
       String type = 'survey'}) {
     final u = user!;
     final lead = Lead(
@@ -922,10 +1563,15 @@ class AppState extends ChangeNotifier {
       type: type,
       createdAt: DateTime.now(),
       vendorName: vendor?.name,
+      phone: phone,
+      preferredSlot: preferredSlot,
     );
+    if (useFirebase) {
+      return _saveSurveyRequest(lead);
+    }
     myLeads.add(lead);
     MockData.leads.insert(0, lead);
-    if (!u.badges.contains('solar_pioneer_lead')) {
+    if (!useFirebase && !u.badges.contains('solar_pioneer_lead')) {
       u.badges = [...u.badges, 'solar_pioneer_lead'];
       u.points += config.solarLeadPoints;
       u.weeklyPoints += config.solarLeadPoints;
@@ -938,16 +1584,152 @@ class AppState extends ChangeNotifier {
               icon: Icons.wb_sunny_rounded));
     }
     notifyListeners();
+    return Future.value(lead);
+  }
+
+  Future<Lead> _saveSurveyRequest(Lead lead) async {
+    await _firestore
+        .collection('users')
+        .doc(user!.uid)
+        .collection('surveyRequests')
+        .doc(lead.id)
+        .set({
+      'userName': lead.userName,
+      'district': lead.district,
+      'sizeKw': lead.sizeKw,
+      'netCost': lead.netCost,
+      'type': lead.type,
+      'createdAt': Timestamp.fromDate(lead.createdAt),
+      'vendorName': lead.vendorName,
+      'status': lead.status,
+      'phone': lead.phone,
+      'preferredSlot': lead.preferredSlot,
+    });
+    myLeads.insert(0, lead);
+    notifyListeners();
     return lead;
   }
 
   // ---------- Profile / settings ----------
-  void updateProfile(void Function(AppUser u) edit) {
-    edit(user!);
+  Map<String, dynamic> _profileData(AppUser u) => {
+        'displayName': u.displayName,
+        'photoUrl': u.photoUrl,
+        'language': u.language,
+        'district': u.district,
+        'pincode': u.pincode,
+        'householdSize': u.householdSize,
+        'homeType': u.homeType,
+        'roofAccess': u.roofAccess,
+        'appliances': List<String>.from(u.appliances),
+        'travelMode': u.travelMode,
+        'weeklyKm': u.weeklyKm,
+        'baselineUnits': u.baselineUnits,
+        'baselineCo2Kg': u.baselineCo2Kg,
+        'goalPercent': u.goalPercent,
+        'onboardingComplete': u.onboardingComplete,
+        'communityId': u.communityId,
+        'peakNudge': u.peakNudge,
+        'weatherNudge': u.weatherNudge,
+        'communityUpdates': u.communityUpdates,
+        'streakReminders': u.streakReminders,
+      };
+
+  void _restoreProfileData(AppUser u, Map<String, dynamic> data) {
+    u
+      ..displayName = data['displayName'] as String
+      ..photoUrl = data['photoUrl'] as String?
+      ..language = data['language'] as String
+      ..district = data['district'] as String
+      ..pincode = data['pincode'] as String
+      ..householdSize = data['householdSize'] as int
+      ..homeType = data['homeType'] as String
+      ..roofAccess = data['roofAccess'] as String
+      ..appliances = List<String>.from(data['appliances'] as List)
+      ..travelMode = data['travelMode'] as String
+      ..weeklyKm = data['weeklyKm'] as double
+      ..baselineUnits = data['baselineUnits'] as double
+      ..baselineCo2Kg = data['baselineCo2Kg'] as double
+      ..goalPercent = data['goalPercent'] as int
+      ..onboardingComplete = data['onboardingComplete'] as bool
+      ..communityId = data['communityId'] as String?
+      ..peakNudge = data['peakNudge'] as bool
+      ..weatherNudge = data['weatherNudge'] as bool
+      ..communityUpdates = data['communityUpdates'] as bool
+      ..streakReminders = data['streakReminders'] as bool;
+  }
+
+  Future<void> updateProfile(void Function(AppUser u) edit) async {
+    final currentUser = user!;
+    final previous = _profileData(currentUser);
+    edit(currentUser);
+    if (useFirebase) {
+      try {
+        await _firestore.collection('users').doc(currentUser.uid).set(
+          {
+            ..._profileData(currentUser),
+            'updatedAt': FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true),
+        );
+      } catch (_) {
+        _restoreProfileData(currentUser, previous);
+        rethrow;
+      }
+    }
     notifyListeners();
   }
 
-  void updateLeadStatus(Lead lead, String status) {
+  Future<void> loadAdminLeads() async {
+    if (!useFirebase) {
+      adminLeads
+        ..clear()
+        ..addAll(MockData.leads);
+      notifyListeners();
+      return;
+    }
+    if (user?.isAdmin != true) {
+      throw StateError('Administrator access is required.');
+    }
+    final snapshot = await _firestore
+        .collectionGroup('surveyRequests')
+        .orderBy('createdAt', descending: true)
+        .limit(200)
+        .get();
+    adminLeads
+      ..clear()
+      ..addAll(snapshot.docs.map(_leadFromDocument));
+    notifyListeners();
+  }
+
+  Future<void> updateLeadStatus(Lead lead, String status) async {
+    const allowed = {
+      'new',
+      'contacted',
+      'survey_done',
+      'quoted',
+      'installed',
+      'dropped',
+    };
+    if (!allowed.contains(status)) {
+      throw ArgumentError.value(status, 'status', 'Unsupported lead status');
+    }
+    if (useFirebase) {
+      if (user?.isAdmin != true || lead.ownerUid == null) {
+        throw StateError('Administrator access is required.');
+      }
+      await _firestore
+          .collection('users')
+          .doc(lead.ownerUid)
+          .collection('surveyRequests')
+          .doc(lead.id)
+          .update({
+        'status': status,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    } else {
+      final index = MockData.leads.indexWhere((item) => item.id == lead.id);
+      if (index >= 0) MockData.leads[index].status = status;
+    }
     lead.status = status;
     notifyListeners();
   }

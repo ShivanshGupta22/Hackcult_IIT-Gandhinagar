@@ -576,18 +576,42 @@ class _AddMonthScreenState extends State<AddMonthScreen> {
       if (ok != true) return;
     }
     setState(() => _saving = true);
-    await Future<void>.delayed(const Duration(milliseconds: 600));
+    late final int points;
+    try {
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      points = await s.addMonth(
+        month: _month,
+        units: units,
+        fromBill: _photo,
+      );
+    } catch (error, stackTrace) {
+      FlutterError.reportError(FlutterErrorDetails(
+        exception: error,
+        stack: stackTrace,
+        library: 'Saving monthly impact entry',
+      ));
+      if (!mounted) return;
+      setState(() => _saving = false);
+      showAppSnack(
+        context,
+        'Could not save your impact entry: $error',
+        icon: Icons.error_outline_rounded,
+        color: AppColors.error,
+      );
+      return;
+    }
     if (!mounted) return;
-    final points = s.addMonth(month: _month, units: units, fromBill: _photo);
     final saved = math.max(0.0, s.user!.baselineUnits - units);
     if (points > 0) showConfetti(context);
     showAppSnack(
       context,
       points > 0
           ? 'Saved ${saved.round()} units vs baseline · +$points points (bill verified)'
-          : saved > 0
-              ? 'Saved ${saved.round()} units vs baseline. Add a bill photo next time to earn points!'
-              : 'Entry saved. Check today\'s nudges for quick wins.',
+          : s.useFirebase
+              ? 'Entry saved. Reward points are unavailable until secure verification is deployed.'
+              : saved > 0
+                  ? 'Saved ${saved.round()} units vs baseline. Add a bill photo next time to earn points!'
+                  : 'Entry saved. Check today\'s nudges for quick wins.',
       icon: Icons.check_circle_rounded,
       color: AppColors.primary,
     );
@@ -662,67 +686,75 @@ class _AddMonthScreenState extends State<AddMonthScreen> {
               onChanged: (_) => setState(() {}),
             ),
             const SizedBox(height: 20),
-            Text('Bill photo (for verified points)', style: t.titleSmall),
-            const SizedBox(height: 8),
-            InkWell(
-              borderRadius: BorderRadius.circular(16),
-              onTap: () => setState(() => _photo = !_photo),
-              child: Container(
-                height: 130,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(16),
-                  color: _photo ? AppColors.primarySoft : AppColors.surface,
-                  border: Border.all(
-                      color: _photo ? AppColors.primary : AppColors.border,
-                      width: 1.5),
-                ),
-                child: _photo
-                    ? Row(
-                        children: [
-                          Container(
-                            width: 110,
-                            margin: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                                color: const Color(0xFFDDE7DD),
-                                borderRadius: BorderRadius.circular(12)),
-                            child: const Icon(Icons.receipt_long_rounded,
-                                size: 40, color: Colors.white),
-                          ),
-                          Expanded(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                    'bill_${_month.year}${_month.month.toString().padLeft(2, '0')}.jpg',
-                                    style: t.titleSmall),
-                                const SizedBox(height: 4),
-                                const StatusTag(
-                                    label: 'OCR: units detected ✓',
-                                    color: AppColors.success),
-                                const SizedBox(height: 6),
-                                Text('Tap to remove', style: t.labelSmall),
-                              ],
-                            ),
-                          ),
-                        ],
-                      )
-                    : Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Icon(Icons.add_a_photo_outlined,
-                              color: AppColors.primary, size: 30),
-                          const SizedBox(height: 8),
-                          Text('Add bill photo',
-                              style: t.labelLarge
-                                  ?.copyWith(color: AppColors.primary)),
-                          Text(
-                              'Earn ${s.config.pointsPerUnitSaved} points per unit saved',
-                              style: t.labelSmall),
-                        ],
-                      ),
+            if (s.useFirebase) ...[
+              const InfoBanner(
+                text:
+                    'Bill photo verification is not configured yet. You can save the monthly units now; rewards will be available after secure verification is deployed.',
+                icon: Icons.info_outline_rounded,
               ),
-            ),
+            ] else ...[
+              Text('Bill photo (for verified points)', style: t.titleSmall),
+              const SizedBox(height: 8),
+              InkWell(
+                borderRadius: BorderRadius.circular(16),
+                onTap: () => setState(() => _photo = !_photo),
+                child: Container(
+                  height: 130,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(16),
+                    color: _photo ? AppColors.primarySoft : AppColors.surface,
+                    border: Border.all(
+                        color: _photo ? AppColors.primary : AppColors.border,
+                        width: 1.5),
+                  ),
+                  child: _photo
+                      ? Row(
+                          children: [
+                            Container(
+                              width: 110,
+                              margin: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                  color: const Color(0xFFDDE7DD),
+                                  borderRadius: BorderRadius.circular(12)),
+                              child: const Icon(Icons.receipt_long_rounded,
+                                  size: 40, color: Colors.white),
+                            ),
+                            Expanded(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                      'bill_${_month.year}${_month.month.toString().padLeft(2, '0')}.jpg',
+                                      style: t.titleSmall),
+                                  const SizedBox(height: 4),
+                                  const StatusTag(
+                                      label: 'OCR: units detected ✓',
+                                      color: AppColors.success),
+                                  const SizedBox(height: 6),
+                                  Text('Tap to remove', style: t.labelSmall),
+                                ],
+                              ),
+                            ),
+                          ],
+                        )
+                      : Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.add_a_photo_outlined,
+                                color: AppColors.primary, size: 30),
+                            const SizedBox(height: 8),
+                            Text('Add bill photo',
+                                style: t.labelLarge
+                                    ?.copyWith(color: AppColors.primary)),
+                            Text(
+                                'Earn ${s.config.pointsPerUnitSaved} points per unit saved',
+                                style: t.labelSmall),
+                          ],
+                        ),
+                ),
+              ),
+            ],
             const SizedBox(height: 20),
             Text('Other sources', style: t.titleSmall),
             const SizedBox(height: 4),

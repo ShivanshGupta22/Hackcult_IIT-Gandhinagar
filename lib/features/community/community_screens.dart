@@ -42,173 +42,216 @@ class _CommunityScreenState extends State<CommunityScreen> {
             ),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 4, 16, 32),
-        children: [
-          if (c == null)
-            AppCard(
-              gradient: AppColors.heroGreen,
-              onTap: () => context.push('/community/join'),
-              child: Row(
-                children: [
-                  const IconTile(
-                      icon: Icons.groups_rounded,
-                      color: Colors.white,
-                      size: 52),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Join your society or ward',
-                            style:
-                                t.titleMedium?.copyWith(color: Colors.white)),
-                        const SizedBox(height: 4),
-                        Text(
-                            'Compete on shared goals and earn bonus points together',
-                            style:
-                                t.bodySmall?.copyWith(color: Colors.white70)),
-                      ],
-                    ),
-                  ),
-                  const Icon(Icons.chevron_right_rounded, color: Colors.white),
-                ],
-              ),
-            )
-          else ...[
-            AppCard(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      IconTile(
-                          icon: _typeIcon(c.type),
-                          color: AppColors.primary,
-                          size: 52),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(c.name, style: t.titleMedium),
-                            Text(
-                                '${c.type} · ${c.district} · ${Fmt.int(c.memberCount)} members',
-                                style: t.labelSmall),
-                          ],
-                        ),
-                      ),
-                      if (s.user!.role == UserRole.captain)
-                        const StatusTag(
-                            label: 'Captain', color: AppColors.secondary),
-                    ],
-                  ),
-                  const SizedBox(height: 14),
-                  Row(
-                    children: [
-                      Expanded(
-                          child: _MiniStat(
-                              value: Fmt.compact(c.totalUnitsSaved),
-                              label: 'units saved')),
-                      Expanded(
-                          child: _MiniStat(
-                              value: Fmt.tonnes(c.totalUnitsSaved *
-                                  s.config.factors.electricity),
-                              label: 'CO₂ avoided')),
-                      Expanded(
-                          child: _MiniStat(
-                              value: '#${_communityRank(c)}',
-                              label: 'in ${c.district}')),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 14),
-            if (g != null)
+      body: RefreshIndicator(
+        onRefresh: () async {
+          try {
+            await s.refreshCommunityProgress();
+          } catch (error) {
+            if (!context.mounted) return;
+            showAppSnack(
+              context,
+              'Could not refresh community goal: $error',
+              icon: Icons.error_outline_rounded,
+              color: AppColors.error,
+            );
+          }
+        },
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 32),
+          children: [
+            if (c == null)
               AppCard(
-                onTap: () => context.push('/community/goals/${g.id}'),
+                gradient: AppColors.heroGreen,
+                onTap: () => context.push('/community/join'),
+                child: Row(
+                  children: [
+                    const IconTile(
+                        icon: Icons.groups_rounded,
+                        color: Colors.white,
+                        size: 52),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Join your society or ward',
+                              style:
+                                  t.titleMedium?.copyWith(color: Colors.white)),
+                          const SizedBox(height: 4),
+                          Text(
+                              s.useFirebase
+                                  ? 'Join a shared goal and track progress together'
+                                  : 'Compete on shared goals and earn bonus points together',
+                              style:
+                                  t.bodySmall?.copyWith(color: Colors.white70)),
+                        ],
+                      ),
+                    ),
+                    const Icon(Icons.chevron_right_rounded,
+                        color: Colors.white),
+                  ],
+                ),
+              )
+            else ...[
+              if (s.useFirebase) ...[
+                const InfoBanner(
+                  text:
+                      'Task contributions are self-reported. Online reward points are disabled until secure verification is available.',
+                  icon: Icons.info_outline_rounded,
+                ),
+                const SizedBox(height: 12),
+              ],
+              AppCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Row(
                       children: [
-                        const Icon(Icons.flag_rounded,
-                            color: AppColors.primary, size: 20),
-                        const SizedBox(width: 8),
+                        IconTile(
+                            icon: _typeIcon(c.type),
+                            color: AppColors.primary,
+                            size: 52),
+                        const SizedBox(width: 12),
                         Expanded(
-                            child: Text('Community goal', style: t.titleSmall)),
-                        Pill(
-                            label: '${g.daysLeft} days left',
-                            color: AppColors.secondarySoft,
-                            textColor: AppColors.warning),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(c.name, style: t.titleMedium),
+                              Text(
+                                  '${c.type} · ${c.district} · ${Fmt.int(c.memberCount)} members',
+                                  style: t.labelSmall),
+                            ],
+                          ),
+                        ),
+                        if (s.user!.role == UserRole.captain)
+                          const StatusTag(
+                              label: 'Captain', color: AppColors.secondary),
                       ],
                     ),
-                    const SizedBox(height: 8),
-                    Text(g.title, style: t.titleMedium),
-                    const SizedBox(height: 10),
-                    GoalProgressBar(
-                      value: g.ratio,
-                      label:
-                          '${Fmt.compact(g.progress)} / ${Fmt.compact(g.target)} ${_metricLabel(g.metric)}',
-                      trailing: '${(g.ratio * 100).round()}%',
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        Expanded(
+                            child: _MiniStat(
+                                value: Fmt.compact(c.totalUnitsSaved),
+                                label: 'units saved')),
+                        Expanded(
+                            child: _MiniStat(
+                                value: Fmt.tonnes(c.totalUnitsSaved *
+                                    s.config.factors.electricity),
+                                label: 'CO₂ avoided')),
+                        Expanded(
+                            child: _MiniStat(
+                                value: s.useFirebase
+                                    ? '—'
+                                    : '#${_communityRank(c)}',
+                                label: 'in ${c.district}')),
+                      ],
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                        'Your contribution: ${Fmt.compact(g.myContribution)} ${_metricLabel(g.metric)} · ${g.bonusPoints} bonus points on completion',
-                        style: t.labelSmall),
                   ],
                 ),
               ),
-          ],
-          const SizedBox(height: 20),
-          SectionHeader(
-            title: 'Leaderboard',
-            subtitle: _weekly ? 'This week' : 'All time',
-            actionLabel: _weekly ? 'All time' : 'This week',
-            onAction: () => setState(() => _weekly = !_weekly),
-          ),
-          SegmentedButton<String>(
-            segments: [
-              ButtonSegment(
-                  value: 'community',
-                  label: Text(c == null ? 'Nearby' : 'Community')),
-              const ButtonSegment(value: 'district', label: Text('District')),
-              const ButtonSegment(value: 'state', label: Text('Gujarat')),
+              const SizedBox(height: 14),
+              if (g != null)
+                AppCard(
+                  onTap: () => context.push('/community/goals/${g.id}'),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.flag_rounded,
+                              color: AppColors.primary, size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(
+                              child:
+                                  Text('Community goal', style: t.titleSmall)),
+                          Pill(
+                              label: '${g.daysLeft} days left',
+                              color: AppColors.secondarySoft,
+                              textColor: AppColors.warning),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(g.title, style: t.titleMedium),
+                      const SizedBox(height: 10),
+                      GoalProgressBar(
+                        value: g.ratio,
+                        label:
+                            '${Fmt.compact(g.progress)} / ${Fmt.compact(g.target)} ${_metricLabel(g.metric)}',
+                        trailing: '${(g.ratio * 100).round()}%',
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                          'Your contribution: ${Fmt.compact(g.myContribution)} ${_metricLabel(g.metric)} · ${g.bonusPoints} bonus points on completion',
+                          style: t.labelSmall),
+                    ],
+                  ),
+                ),
             ],
-            selected: {_scope},
-            onSelectionChanged: (v) => setState(() => _scope = v.first),
-            showSelectedIcon: false,
-            style: SegmentedButton.styleFrom(
-                selectedBackgroundColor: AppColors.primarySoft,
-                selectedForegroundColor: AppColors.primary,
-                side: const BorderSide(color: AppColors.border)),
-          ),
-          const SizedBox(height: 12),
-          if (board.length >= 3) _Podium(top: board.take(3).toList()),
-          const SizedBox(height: 8),
-          AppCard(
-            padding: const EdgeInsets.all(6),
-            child: Column(
-              children: [
-                for (final e in board.skip(3).take(12))
-                  LeaderboardTile(entry: e, dense: true),
-                if (board.where((e) => e.isMe).isNotEmpty &&
-                    board.indexWhere((e) => e.isMe) >= 15) ...[
-                  const Divider(height: 8),
-                  LeaderboardTile(
-                      entry: board.firstWhere((e) => e.isMe), dense: true),
-                ],
-              ],
+            const SizedBox(height: 20),
+            SectionHeader(
+              title: 'Leaderboard',
+              subtitle: s.useFirebase
+                  ? 'Online points rankings are not enabled'
+                  : _weekly
+                      ? 'This week'
+                      : 'All time',
+              actionLabel: s.useFirebase
+                  ? null
+                  : _weekly
+                      ? 'All time'
+                      : 'This week',
+              onAction: s.useFirebase
+                  ? null
+                  : () => setState(() => _weekly = !_weekly),
             ),
-          ),
-          const SizedBox(height: 10),
-          const InfoBanner(
-              text:
-                  'Points reset weekly for the challenge board. All-time points decide your level.',
-              icon: Icons.emoji_events_outlined,
-              color: AppColors.secondary),
-        ],
+            if (!s.useFirebase)
+              SegmentedButton<String>(
+                segments: [
+                  ButtonSegment(
+                      value: 'community',
+                      label: Text(c == null ? 'Nearby' : 'Community')),
+                  const ButtonSegment(
+                      value: 'district', label: Text('District')),
+                  const ButtonSegment(value: 'state', label: Text('Gujarat')),
+                ],
+                selected: {_scope},
+                onSelectionChanged: (v) => setState(() => _scope = v.first),
+                showSelectedIcon: false,
+                style: SegmentedButton.styleFrom(
+                    selectedBackgroundColor: AppColors.primarySoft,
+                    selectedForegroundColor: AppColors.primary,
+                    side: const BorderSide(color: AppColors.border)),
+              ),
+            if (!s.useFirebase) const SizedBox(height: 12),
+            if (board.length >= 3) _Podium(top: board.take(3).toList()),
+            const SizedBox(height: 8),
+            AppCard(
+              padding: const EdgeInsets.all(6),
+              child: Column(
+                children: [
+                  for (final e in board.skip(3).take(12))
+                    LeaderboardTile(entry: e, dense: true),
+                  if (board.where((e) => e.isMe).isNotEmpty &&
+                      board.indexWhere((e) => e.isMe) >= 15) ...[
+                    const Divider(height: 8),
+                    LeaderboardTile(
+                        entry: board.firstWhere((e) => e.isMe), dense: true),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+            InfoBanner(
+                text: s.useFirebase
+                    ? 'Online points rankings are not enabled yet.'
+                    : 'Points reset weekly for the challenge board. All-time points decide your level.',
+                icon: Icons.emoji_events_outlined,
+                color: AppColors.secondary),
+          ],
+        ),
       ),
     );
   }
@@ -448,10 +491,7 @@ class _JoinCommunityScreenState extends State<JoinCommunityScreen> {
                           label: 'units saved')),
                   Expanded(
                       child: _MiniStat(
-                          value:
-                              MockData.goals.any((g) => g.communityId == c.id)
-                                  ? 'Active'
-                                  : 'None',
+                          value: s.goalById(c.id) == null ? 'None' : 'Active',
                           label: 'goal')),
                 ],
               ),
@@ -465,20 +505,42 @@ class _JoinCommunityScreenState extends State<JoinCommunityScreen> {
       },
     );
     if (ok == true && mounted) {
-      s.joinCommunity(c);
-      _afterJoin(c);
+      try {
+        await s.joinCommunity(c);
+        if (mounted) _afterJoin(c);
+      } catch (error) {
+        if (!mounted) return;
+        showAppSnack(
+          context,
+          'Could not join this community: $error',
+          icon: Icons.error_outline_rounded,
+          color: AppColors.error,
+        );
+      }
     }
   }
 
-  void _joinByCode() {
+  Future<void> _joinByCode() async {
     final code = _code.text.trim().toUpperCase();
-    final c = MockData.communities.where((x) => x.joinCode == code).firstOrNull;
+    late final Community? c;
+    try {
+      c = await AppScope.read(context).communityByJoinCode(code);
+    } catch (error) {
+      if (!mounted) return;
+      showAppSnack(
+        context,
+        'Could not look up that community: $error',
+        icon: Icons.error_outline_rounded,
+        color: AppColors.error,
+      );
+      return;
+    }
     if (c == null) {
       showAppSnack(context, 'Code not found. Check with your society captain.',
           icon: Icons.error_outline_rounded, color: AppColors.error);
       return;
     }
-    _join(c);
+    await _join(c);
   }
 
   @override
@@ -486,7 +548,7 @@ class _JoinCommunityScreenState extends State<JoinCommunityScreen> {
     final s = AppScope.of(context);
     final t = Theme.of(context).textTheme;
     final u = s.user!;
-    final all = MockData.communities;
+    final all = s.communities;
     final list = (_query.isEmpty
             ? all.where((c) => c.district == u.district).toList()
             : all
@@ -503,6 +565,24 @@ class _JoinCommunityScreenState extends State<JoinCommunityScreen> {
         leading: const SafeBackButton(fallback: '/community'),
         title: const Text('Join a community'),
         actions: [
+          if (s.useFirebase)
+            IconButton(
+              tooltip: 'Refresh communities',
+              onPressed: () async {
+                try {
+                  await s.refreshCommunities();
+                } catch (error) {
+                  if (!context.mounted) return;
+                  showAppSnack(
+                    context,
+                    'Could not load communities: $error',
+                    icon: Icons.error_outline_rounded,
+                    color: AppColors.error,
+                  );
+                }
+              },
+              icon: const Icon(Icons.refresh_rounded),
+            ),
           if (widget.fromOnboarding)
             TextButton(
                 onPressed: () => context.go('/home'),
@@ -641,6 +721,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
       TextEditingController(text: AppScope.read(context).user!.pincode);
   String _type = 'Society';
   bool _accept = false;
+  bool _saving = false;
   String? _nameError;
 
   @override
@@ -650,7 +731,8 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
     super.dispose();
   }
 
-  void _create() {
+  Future<void> _create() async {
+    if (_saving) return;
     setState(() => _nameError =
         _name.text.trim().length < 3 ? 'Enter at least 3 characters' : null);
     if (_nameError != null) return;
@@ -659,12 +741,26 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
           icon: Icons.error_outline_rounded, color: AppColors.error);
       return;
     }
-    final c = AppScope.read(context).createCommunity(
-        name: _name.text.trim(), type: _type, pincode: _pin.text.trim());
-    if (context.canPop()) {
-      context.pop(c);
-    } else {
-      context.go('/community');
+    setState(() => _saving = true);
+    try {
+      final c = await AppScope.read(context).createCommunity(
+          name: _name.text.trim(), type: _type, pincode: _pin.text.trim());
+      if (!mounted) return;
+      if (context.canPop()) {
+        context.pop(c);
+      } else {
+        context.go('/community');
+      }
+    } catch (error) {
+      if (!mounted) return;
+      showAppSnack(
+        context,
+        'Could not create community: $error',
+        icon: Icons.error_outline_rounded,
+        color: AppColors.error,
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
   }
 
@@ -733,8 +829,8 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
             ),
             const SizedBox(height: 12),
             PrimaryButton(
-                label: 'Create & become captain',
-                onPressed: _accept ? _create : null,
+                label: _saving ? 'Creating...' : 'Create & become captain',
+                onPressed: _accept && !_saving ? _create : null,
                 icon: Icons.star_rounded),
           ],
         ),
@@ -754,7 +850,7 @@ class GoalDetailScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final s = AppScope.of(context);
     final t = Theme.of(context).textTheme;
-    final g = MockData.goals.where((x) => x.id == goalId).firstOrNull;
+    final g = s.goalById(goalId);
     if (g == null) {
       return Scaffold(
           appBar: AppBar(
@@ -765,7 +861,19 @@ class GoalDetailScreen extends StatelessWidget {
               title: 'Goal not found',
               body: 'This goal may have ended'));
     }
-    final c = MockData.communityById(g.communityId);
+    final c = s.communityById(g.communityId);
+    if (c == null) {
+      return Scaffold(
+        appBar: AppBar(
+          leading: const SafeBackButton(fallback: '/community'),
+        ),
+        body: const EmptyState(
+          icon: Icons.groups_outlined,
+          title: 'Community not found',
+          body: 'Join or create a community to view its goal.',
+        ),
+      );
+    }
     final perDay = g.daysLeft == 0 ? 0 : (g.target - g.progress) / g.daysLeft;
     final contributors = s.leaderboard('community').take(5).toList();
 

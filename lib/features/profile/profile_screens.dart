@@ -9,6 +9,24 @@ import '../../data/app_state.dart';
 import '../../data/mock_data.dart';
 import '../../data/models.dart';
 
+Future<void> _updateProfileWithFeedback(
+  BuildContext context,
+  AppState state,
+  void Function(AppUser) edit,
+) async {
+  try {
+    await state.updateProfile(edit);
+  } catch (error) {
+    if (!context.mounted) return;
+    showAppSnack(
+      context,
+      'Could not save your changes: $error',
+      icon: Icons.error_outline_rounded,
+      color: AppColors.error,
+    );
+  }
+}
+
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
 
@@ -165,8 +183,11 @@ class ProfileScreen extends StatelessWidget {
                     icon: Icons.language_rounded,
                     title: 'Language',
                     subtitle: u.language == 'gu' ? 'ગુજરાતી' : 'English',
-                    onTap: () => s.updateProfile(
-                        (x) => x.language = x.language == 'gu' ? 'en' : 'gu')),
+                    onTap: () => _updateProfileWithFeedback(
+                          context,
+                          s,
+                          (x) => x.language = x.language == 'gu' ? 'en' : 'gu',
+                        )),
                 const Divider(height: 1, indent: 60),
                 _MenuTile(
                     icon: Icons.notifications_outlined,
@@ -272,8 +293,7 @@ class ProfileScreen extends StatelessWidget {
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Close'))
+              onPressed: () => Navigator.pop(ctx), child: const Text('Close'))
         ],
       ),
     );
@@ -313,9 +333,19 @@ class ProfileScreen extends StatelessWidget {
               const SizedBox(height: 16),
               PrimaryButton(
                 label: 'Save goal',
-                onPressed: () {
-                  s.updateProfile((u) => u.goalPercent = g);
-                  Navigator.pop(ctx);
+                onPressed: () async {
+                  try {
+                    await s.updateProfile((u) => u.goalPercent = g);
+                    if (ctx.mounted) Navigator.pop(ctx);
+                  } catch (error) {
+                    if (!ctx.mounted) return;
+                    showAppSnack(
+                      context,
+                      'Could not save your goal: $error',
+                      icon: Icons.error_outline_rounded,
+                      color: AppColors.error,
+                    );
+                  }
                 },
               ),
             ],
@@ -533,6 +563,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   late final Set<String> _appl = {...u.appliances};
   late String _travel = u.travelMode;
   late double _km = u.weeklyKm;
+  bool _saving = false;
 
   @override
   void dispose() {
@@ -541,24 +572,39 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     super.dispose();
   }
 
-  void _save() {
+  Future<void> _save() async {
+    if (_saving) return;
     if (_name.text.trim().length < 2) {
       showAppSnack(context, 'Enter your name',
           icon: Icons.error_outline_rounded, color: AppColors.error);
       return;
     }
-    AppScope.read(context).updateProfile((x) => x
-      ..displayName = _name.text.trim()
-      ..pincode = _pin.text.trim()
-      ..district = MockData.districtFromPin(_pin.text.trim())
-      ..householdSize = _household
-      ..homeType = _homeType
-      ..appliances = _appl.toList()
-      ..travelMode = _travel
-      ..weeklyKm = _km);
-    showAppSnack(context, 'Profile updated',
-        icon: Icons.check_circle_rounded, color: AppColors.primary);
-    context.safePop('/profile');
+    setState(() => _saving = true);
+    try {
+      await AppScope.read(context).updateProfile((x) => x
+        ..displayName = _name.text.trim()
+        ..pincode = _pin.text.trim()
+        ..district = MockData.districtFromPin(_pin.text.trim())
+        ..householdSize = _household
+        ..homeType = _homeType
+        ..appliances = _appl.toList()
+        ..travelMode = _travel
+        ..weeklyKm = _km);
+      if (!mounted) return;
+      showAppSnack(context, 'Profile updated',
+          icon: Icons.check_circle_rounded, color: AppColors.primary);
+      context.safePop('/profile');
+    } catch (error) {
+      if (!mounted) return;
+      showAppSnack(
+        context,
+        'Could not save your profile: $error',
+        icon: Icons.error_outline_rounded,
+        color: AppColors.error,
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
   @override
@@ -568,7 +614,11 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       appBar: AppBar(
           leading: const SafeBackButton(fallback: '/profile'),
           title: const Text('Edit profile'),
-          actions: [TextButton(onPressed: _save, child: const Text('Save'))]),
+          actions: [
+            TextButton(
+                onPressed: _saving ? null : _save,
+                child: Text(_saving ? 'Saving' : 'Save'))
+          ]),
       body: PhoneFrame(
         child: ListView(
           padding: const EdgeInsets.all(20),
@@ -678,7 +728,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                     'Changing appliances or travel updates your task recommendations, not your baseline footprint.',
                 icon: Icons.info_outline_rounded),
             const SizedBox(height: 20),
-            PrimaryButton(label: 'Save changes', onPressed: _save),
+            PrimaryButton(
+                label: _saving ? 'Saving...' : 'Save changes',
+                onPressed: _saving ? null : _save),
           ],
         ),
       ),
@@ -721,7 +773,8 @@ class NotificationSettingsScreen extends StatelessWidget {
                     subtitle:
                         const Text('5:30 pm · shift heavy loads before 6 pm'),
                     value: u.peakNudge,
-                    onChanged: (v) => s.updateProfile((x) => x.peakNudge = v),
+                    onChanged: (v) => _updateProfileWithFeedback(
+                        context, s, (x) => x.peakNudge = v),
                   ),
                   const Divider(height: 1, indent: 60),
                   SwitchListTile(
@@ -731,8 +784,8 @@ class NotificationSettingsScreen extends StatelessWidget {
                     subtitle:
                         const Text('AC & cooling advice when it crosses 40°C'),
                     value: u.weatherNudge,
-                    onChanged: (v) =>
-                        s.updateProfile((x) => x.weatherNudge = v),
+                    onChanged: (v) => _updateProfileWithFeedback(
+                        context, s, (x) => x.weatherNudge = v),
                   ),
                   const Divider(height: 1, indent: 60),
                   SwitchListTile(
@@ -742,8 +795,8 @@ class NotificationSettingsScreen extends StatelessWidget {
                     subtitle: const Text(
                         'Goal milestones, rank changes, captain posts'),
                     value: u.communityUpdates,
-                    onChanged: (v) =>
-                        s.updateProfile((x) => x.communityUpdates = v),
+                    onChanged: (v) => _updateProfileWithFeedback(
+                        context, s, (x) => x.communityUpdates = v),
                   ),
                   const Divider(height: 1, indent: 60),
                   SwitchListTile(
@@ -752,8 +805,8 @@ class NotificationSettingsScreen extends StatelessWidget {
                     title: const Text('Streak reminders'),
                     subtitle: const Text('8 pm if no task done yet today'),
                     value: u.streakReminders,
-                    onChanged: (v) =>
-                        s.updateProfile((x) => x.streakReminders = v),
+                    onChanged: (v) => _updateProfileWithFeedback(
+                        context, s, (x) => x.streakReminders = v),
                   ),
                 ],
               ),

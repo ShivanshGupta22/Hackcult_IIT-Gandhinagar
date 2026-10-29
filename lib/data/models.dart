@@ -405,6 +405,9 @@ class Lead {
     required this.createdAt,
     this.vendorName,
     this.status = 'new',
+    this.phone,
+    this.preferredSlot,
+    this.ownerUid,
   });
   final String id;
   final String userName;
@@ -415,6 +418,9 @@ class Lead {
   final DateTime createdAt;
   final String? vendorName;
   String status;
+  final String? phone;
+  final String? preferredSlot;
+  final String? ownerUid;
 }
 
 class Nudge {

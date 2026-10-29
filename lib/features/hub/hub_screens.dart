@@ -401,15 +401,28 @@ class _SolarCalculatorScreenState extends State<SolarCalculatorScreen> {
     super.dispose();
   }
 
-  void _calc() {
+  Future<void> _calc() async {
     final units = double.tryParse(_units.text) ?? 0;
     if (units <= 0) {
       showAppSnack(context, 'Enter your monthly units',
           icon: Icons.error_outline_rounded, color: AppColors.error);
       return;
     }
-    final a = AppScope.read(context)
-        .assess(monthlyUnits: units, roofAreaM2: _roof, scSt: _scSt);
+    late final SolarAssessment a;
+    try {
+      a = await AppScope.read(context)
+          .assess(monthlyUnits: units, roofAreaM2: _roof, scSt: _scSt);
+    } catch (error) {
+      if (!mounted) return;
+      showAppSnack(
+        context,
+        'Could not save your task progress: $error',
+        icon: Icons.error_outline_rounded,
+        color: AppColors.error,
+      );
+      return;
+    }
+    if (!mounted) return;
     context.push('/hub/solar/result/${a.id}');
   }
 
@@ -880,6 +893,7 @@ Future<void> showRequestSurveySheet(BuildContext context,
   final phone = TextEditingController();
   var consent = false;
   var slot = 'Weekday morning';
+  var submitting = false;
   await showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -901,7 +915,9 @@ Future<void> showRequestSurveySheet(BuildContext context,
                   style: t.titleLarge),
               const SizedBox(height: 6),
               Text(
-                  'A GEDA-empanelled vendor will visit, verify roof & shading, and share a final quote. No obligation.',
+                  s.useFirebase
+                      ? 'Your request will be saved to your account. Vendor contact is not connected yet; your details will not be sent automatically.'
+                      : 'A GEDA-empanelled vendor will visit, verify roof & shading, and share a final quote. No obligation.',
                   style: t.bodyMedium),
               const SizedBox(height: 16),
               AppTextField(
@@ -936,27 +952,58 @@ Future<void> showRequestSurveySheet(BuildContext context,
                 contentPadding: EdgeInsets.zero,
                 controlAffinity: ListTileControlAffinity.leading,
                 title: Text(
-                    'Share my name, district & estimate with GEDA and the vendor',
+                    s.useFirebase
+                        ? 'Save my contact number, preferred time and estimate with this account'
+                        : 'Share my name, district & estimate with GEDA and the vendor',
                     style: t.bodySmall),
               ),
               const SizedBox(height: 8),
               PrimaryButton(
-                label: 'Submit request  · +${s.config.solarLeadPoints} pts',
-                onPressed: consent && phone.text.trim().length == 10
-                    ? () {
-                        s.requestSurvey(
-                            assessment: assessment,
-                            vendor: vendor,
-                            phone: phone.text.trim(),
-                            type: vendor == null ? 'survey' : 'quote');
-                        Navigator.pop(ctx);
-                        showConfetti(context);
-                        showAppSnack(context,
-                            'Request sent! Vendor will call within 2 working days.',
-                            icon: Icons.check_circle_rounded,
-                            color: AppColors.primary);
-                      }
-                    : null,
+                label: submitting
+                    ? 'Saving...'
+                    : s.useFirebase
+                        ? 'Save request'
+                        : 'Submit request  · +${s.config.solarLeadPoints} pts',
+                onPressed:
+                    consent && phone.text.trim().length == 10 && !submitting
+                        ? () async {
+                            setSt(() => submitting = true);
+                            try {
+                              await s.requestSurvey(
+                                  assessment: assessment,
+                                  vendor: vendor,
+                                  phone: phone.text.trim(),
+                                  preferredSlot: slot,
+                                  type: vendor == null ? 'survey' : 'quote');
+                              if (!ctx.mounted) return;
+                              Navigator.pop(ctx);
+                              if (s.useFirebase) {
+                                showAppSnack(
+                                  context,
+                                  'Request saved to your account. Vendor contact is not connected yet.',
+                                  icon: Icons.check_circle_rounded,
+                                  color: AppColors.primary,
+                                );
+                              } else {
+                                showConfetti(context);
+                                showAppSnack(context,
+                                    'Request sent! Vendor will call within 2 working days.',
+                                    icon: Icons.check_circle_rounded,
+                                    color: AppColors.primary);
+                              }
+                            } catch (error) {
+                              if (!context.mounted) return;
+                              showAppSnack(
+                                context,
+                                'Could not save your request: $error',
+                                icon: Icons.error_outline_rounded,
+                                color: AppColors.error,
+                              );
+                            } finally {
+                              if (ctx.mounted) setSt(() => submitting = false);
+                            }
+                          }
+                        : null,
               ),
               const SizedBox(height: 4),
               Center(

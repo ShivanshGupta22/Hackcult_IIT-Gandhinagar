@@ -80,9 +80,29 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
   }
 
   Future<void> _google() async {
-    setState(() => _gLoading = true);
-    await AppScope.read(context).signInWithGoogle(adminPortal: true);
-    if (mounted) context.go('/admin');
+    setState(() {
+      _gLoading = true;
+      _error = null;
+    });
+    final state = AppScope.read(context);
+    final error = await state.signInWithGoogle(adminPortal: true);
+    if (!mounted) return;
+    setState(() => _gLoading = false);
+    if (error != null) {
+      if (error != 'Google sign-in was cancelled.') {
+        setState(() => _error = error);
+      }
+      return;
+    }
+    if (state.user?.isAdmin != true) {
+      state.signOut();
+      if (!mounted) return;
+      setState(() {
+        _error = 'This account is not authorised for the staff portal.';
+      });
+      return;
+    }
+    context.go('/admin');
   }
 
   @override
@@ -155,7 +175,7 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
                       decoration: const BoxDecoration(
                           color: AppColors.success, shape: BoxShape.circle)),
                   const SizedBox(width: 6),
-                  Text('Grid Synced: Live',
+                  Text('Admin Console',
                       style: t.labelMedium
                           ?.copyWith(color: AppColors.textPrimary)),
                 ],
@@ -856,7 +876,7 @@ class _TopBar extends StatelessWidget {
           Text(title, style: t.titleLarge),
           const Spacer(),
           const StatusTag(
-              label: 'Grid Synced: Live', color: AppColors.success, dot: true),
+              label: 'Admin Console', color: AppColors.success, dot: true),
           const SizedBox(width: 12),
           Text('GEDA State Node: Gandhinagar', style: t.labelMedium),
           const SizedBox(width: 16),
@@ -873,6 +893,42 @@ class _TopBar extends StatelessWidget {
 // ---------------------------------------------------------------------------
 // Overview
 // ---------------------------------------------------------------------------
+class _LiveAdminUnavailable extends StatelessWidget {
+  const _LiveAdminUnavailable({required this.title, required this.message});
+
+  final String title;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720),
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: AppCard(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.info_outline_rounded,
+                    size: 44, color: AppColors.warning),
+                const SizedBox(height: 12),
+                Text(
+                  title,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 8),
+                Text(message, textAlign: TextAlign.center),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class AdminOverviewScreen extends StatefulWidget {
   const AdminOverviewScreen({super.key});
 
@@ -886,6 +942,13 @@ class _AdminOverviewScreenState extends State<AdminOverviewScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (AppScope.of(context).useFirebase) {
+      return const _LiveAdminUnavailable(
+        title: 'Live programme reporting is not connected',
+        message:
+            'The charts, activity feed and district totals on this page are demo data. They are hidden for Firebase accounts so they are not mistaken for real programme statistics. Review actual survey requests in Solar leads.',
+      );
+    }
     final t = Theme.of(context).textTheme;
     const metrics = MockData.districtMetrics;
     final users = metrics.fold<int>(0, (a, b) => a + b.users);
@@ -1361,6 +1424,45 @@ class AdminLeadsScreen extends StatefulWidget {
 class _AdminLeadsScreenState extends State<AdminLeadsScreen> {
   String _status = 'all';
   String _q = '';
+  bool _loading = false;
+  String? _loadError;
+
+  @override
+  void initState() {
+    super.initState();
+    if (AppScope.read(context).useFirebase) {
+      _loadLeads();
+    }
+  }
+
+  Future<void> _loadLeads() async {
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
+    try {
+      await AppScope.read(context).loadAdminLeads();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _loadError = '$error');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _updateLeadStatus(Lead lead, String status) async {
+    try {
+      await AppScope.read(context).updateLeadStatus(lead, status);
+    } catch (error) {
+      if (!mounted) return;
+      showAppSnack(
+        context,
+        'Could not update lead status: $error',
+        icon: Icons.error_outline_rounded,
+        color: AppColors.error,
+      );
+    }
+  }
 
   static const statuses = [
     'new',
@@ -1392,7 +1494,7 @@ class _AdminLeadsScreenState extends State<AdminLeadsScreen> {
   Widget build(BuildContext context) {
     final s = AppScope.of(context);
     final t = Theme.of(context).textTheme;
-    final all = MockData.leads;
+    final all = s.useFirebase ? s.adminLeads : MockData.leads;
     final list = all
         .where((l) =>
             (_status == 'all' || l.status == _status) &&
@@ -1405,6 +1507,30 @@ class _AdminLeadsScreenState extends State<AdminLeadsScreen> {
     return ListView(
       padding: const EdgeInsets.all(28),
       children: [
+        if (s.useFirebase) ...[
+          const InfoBanner(
+            text:
+                'Live survey requests submitted by users. Contact details are restricted to authorised staff.',
+            icon: Icons.verified_user_outlined,
+          ),
+          const SizedBox(height: 12),
+          if (_loading) const LinearProgressIndicator(),
+          if (_loadError != null)
+            InfoBanner(
+              text: 'Could not load live requests: $_loadError',
+              icon: Icons.error_outline_rounded,
+              color: AppColors.error,
+            ),
+          if (_loadError != null)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: _loadLeads,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Try again'),
+              ),
+            ),
+        ],
         _KpiGrid(items: [
           _Kpi('Total leads', '${all.length}', 'This month',
               Icons.inbox_outlined, AppColors.primary),
@@ -1517,14 +1643,16 @@ class _AdminLeadsScreenState extends State<AdminLeadsScreen> {
                               if (v == 'assign') {
                                 _assignVendor(context, l);
                               } else {
-                                s.updateLeadStatus(l, v);
+                                _updateLeadStatus(l, v);
                               }
                             },
                             itemBuilder: (_) => [
-                              const PopupMenuItem(
-                                  value: 'assign',
-                                  child: Text('Assign vendor…')),
-                              const PopupMenuDivider(),
+                              if (!s.useFirebase) ...[
+                                const PopupMenuItem(
+                                    value: 'assign',
+                                    child: Text('Assign vendor…')),
+                                const PopupMenuDivider(),
+                              ],
                               for (final st in statuses)
                                 PopupMenuItem(
                                     value: st,
@@ -1621,6 +1749,13 @@ class _AdminContentScreenState extends State<AdminContentScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (AppScope.of(context).useFirebase) {
+      return const _LiveAdminUnavailable(
+        title: 'Live task and scheme editing is not connected',
+        message:
+            'This page currently uses bundled demo content. Editing is disabled for Firebase accounts until reviewed publishing and versioned content storage are implemented.',
+      );
+    }
     final t = Theme.of(context).textTheme;
     final tasks = MockData.tasks
         .where((x) => _theme == null || x.theme == _theme)
@@ -1807,6 +1942,13 @@ class _AdminCampaignsScreenState extends State<AdminCampaignsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (AppScope.of(context).useFirebase) {
+      return const _LiveAdminUnavailable(
+        title: 'Campaign delivery is not configured',
+        message:
+            'Campaign drafts and delivery are demo-only. Push, SMS and scheduled nudges will not be sent from this app.',
+      );
+    }
     final t = Theme.of(context).textTheme;
     final composer = _Panel(
       title: 'Compose nudge',

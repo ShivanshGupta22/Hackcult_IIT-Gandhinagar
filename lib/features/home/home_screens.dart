@@ -226,13 +226,15 @@ class _HomeScreenState extends State<HomeScreen> {
                         status: s.statusOf(task.id),
                         onTap: () => showTaskSheet(context, task),
                         onDone: () => completeTaskFlow(context, task),
-                        onSkip: () => s.skipTask(task),
-                        onNotApplicable: () {
-                          s.markNotApplicable(task);
-                          showAppSnack(
-                              context, "Got it — we won't suggest this again.",
-                              icon: Icons.thumb_up_alt_outlined);
-                        },
+                        onSkip: () =>
+                            _saveTaskAction(context, () => s.skipTask(task)),
+                        onNotApplicable: () => _saveTaskAction(
+                          context,
+                          () => s.markNotApplicable(task),
+                          successMessage:
+                              "Got it — we won't suggest this again.",
+                          successIcon: Icons.thumb_up_alt_outlined,
+                        ),
                       ),
                       const SizedBox(height: 10),
                     ],
@@ -488,6 +490,15 @@ Future<void> completeTaskFlow(BuildContext context, TaskItem task,
     context.push('/impact/add-month');
     return;
   }
+  if (s.useFirebase && task.verification == Verification.photo) {
+    showAppSnack(
+      context,
+      'Photo verification is not available for online accounts yet.',
+      icon: Icons.info_outline_rounded,
+      color: AppColors.warning,
+    );
+    return;
+  }
   var withPhoto = false;
   if (task.verification == Verification.photo) {
     final picked = await showModalBottomSheet<bool>(
@@ -497,7 +508,19 @@ Future<void> completeTaskFlow(BuildContext context, TaskItem task,
     if (picked != true) return;
     withPhoto = true;
   }
-  final result = s.completeTask(task, withPhoto: withPhoto);
+  late final TaskCompletion result;
+  try {
+    result = await s.completeTask(task, withPhoto: withPhoto);
+  } catch (error) {
+    if (!context.mounted) return;
+    showAppSnack(
+      context,
+      'Could not save task progress: $error',
+      icon: Icons.error_outline_rounded,
+      color: AppColors.error,
+    );
+    return;
+  }
   if (!context.mounted) return;
   HapticFeedback.lightImpact();
   if (result.points > 0) showConfetti(context);
@@ -505,7 +528,9 @@ Future<void> completeTaskFlow(BuildContext context, TaskItem task,
     context,
     result.points > 0
         ? '+${result.points} Green Points'
-        : 'Logged! Daily cap reached — verify with your bill for more.',
+        : s.useFirebase
+            ? 'Task progress saved. Online rewards are not enabled yet.'
+            : 'Logged! Daily cap reached — verify with your bill for more.',
     icon: Icons.stars_rounded,
     color: AppColors.primary,
   );
@@ -519,6 +544,27 @@ Future<void> completeTaskFlow(BuildContext context, TaskItem task,
     if (!context.mounted) return;
     await showDialog<void>(
         context: context, builder: (_) => _BadgeDialog(badge: b));
+  }
+}
+
+Future<void> _saveTaskAction(
+  BuildContext context,
+  Future<void> Function() save, {
+  String? successMessage,
+  IconData successIcon = Icons.check_circle_outline_rounded,
+}) async {
+  try {
+    await save();
+    if (!context.mounted || successMessage == null) return;
+    showAppSnack(context, successMessage, icon: successIcon);
+  } catch (error) {
+    if (!context.mounted) return;
+    showAppSnack(
+      context,
+      'Could not save task progress: $error',
+      icon: Icons.error_outline_rounded,
+      color: AppColors.error,
+    );
   }
 }
 
@@ -766,8 +812,14 @@ class TaskDetailSheet extends StatelessWidget {
               Center(
                 child: TextButton(
                   onPressed: () {
-                    s.markNotApplicable(task);
-                    Navigator.pop(context);
+                    _saveTaskAction(
+                      context,
+                      () => s.markNotApplicable(task),
+                      successMessage: "Got it — we won't suggest this again.",
+                      successIcon: Icons.thumb_up_alt_outlined,
+                    ).then((_) {
+                      if (context.mounted) Navigator.pop(context);
+                    });
                   },
                   style: TextButton.styleFrom(
                       foregroundColor: AppColors.textSecondary),
