@@ -145,6 +145,21 @@ class AppState extends ChangeNotifier {
         return null;
       } on firebase_auth.FirebaseAuthException catch (error) {
         return _authError(error);
+      } on FirebaseException catch (error, stackTrace) {
+        FlutterError.reportError(FlutterErrorDetails(
+          exception: error,
+          stack: stackTrace,
+          library: 'Firebase sign-in profile loading',
+        ));
+        return switch (error.code) {
+          'permission-denied' =>
+            'Signed in, but your account data could not be loaded due to access permissions.',
+          'unavailable' ||
+          'network-request-failed' =>
+            'Could not load your account data. Check your connection and try again.',
+          _ =>
+            'Could not finish loading your account (${error.code}). Please try again.',
+        };
       }
     }
 
