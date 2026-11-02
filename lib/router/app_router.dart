@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../data/app_state.dart';
 import '../features/admin/admin_screens.dart';
+import '../features/admin/admin_workspace_screens.dart';
 import '../features/auth/auth_screens.dart';
 import '../features/community/community_screens.dart';
 import '../features/home/home_screens.dart';
@@ -131,11 +132,32 @@ GoRouter buildRouter(AppState state) {
               path: '/admin/leads',
               builder: (_, __) => const AdminLeadsScreen()),
           GoRoute(
+              path: '/admin/citizens',
+              builder: (_, __) => const AdminCitizensScreen()),
+          GoRoute(
+              path: '/admin/communities',
+              builder: (_, __) => const AdminCommunitiesScreen()),
+          GoRoute(
+              path: '/admin/utilities',
+              builder: (_, __) => const AdminUtilitiesScreen()),
+          GoRoute(
               path: '/admin/content',
               builder: (_, __) => const AdminContentScreen()),
           GoRoute(
               path: '/admin/campaigns',
               builder: (_, __) => const AdminCampaignsScreen()),
+          GoRoute(
+              path: '/admin/reports',
+              builder: (_, __) => const AdminReportsScreen()),
+          GoRoute(
+              path: '/admin/audit',
+              builder: (_, __) => const AdminAuditLogScreen()),
+          GoRoute(
+              path: '/admin/settings',
+              builder: (_, __) => const AdminSettingsScreen()),
+          GoRoute(
+              path: '/admin/notifications',
+              builder: (_, __) => const AdminNotificationsScreen()),
         ],
       ),
     ],

@@ -14,7 +14,7 @@ import '../auth/auth_screens.dart' show Validators;
 class _A {
   static const bgLeftTop = Color(0xFF1F6B2B);
   static const bgLeftBottom = Color(0xFF2E7D32);
-  static const bgRight = Color(0xFFF7F9F7);
+  static const bgRight = Color(0xFFF0FAF2);
   static const deep = Color(0xFF0F4D1A);
   static const card = Colors.white;
   static const border = Color(0xFFE3E8E3);
@@ -696,9 +696,19 @@ class AdminShell extends StatelessWidget {
 
   static const _items = [
     ('/admin', 'Overview', Icons.dashboard_outlined),
+    ('/admin/citizens', 'Citizens', Icons.people_alt_outlined),
     ('/admin/leads', 'Solar leads', Icons.solar_power_outlined),
+    (
+      '/admin/communities',
+      'Communities & Challenges',
+      Icons.emoji_events_outlined
+    ),
+    ('/admin/utilities', 'Gas & Utilities', Icons.local_gas_station_outlined),
     ('/admin/content', 'Tasks & content', Icons.article_outlined),
-    ('/admin/campaigns', 'Campaigns', Icons.campaign_outlined),
+    ('/admin/campaigns', 'Campaigns & nudges', Icons.campaign_outlined),
+    ('/admin/reports', 'Reports', Icons.bar_chart_rounded),
+    ('/admin/audit', 'Audit log', Icons.history_rounded),
+    ('/admin/settings', 'Settings', Icons.settings_outlined),
   ];
 
   int get _index {
@@ -722,31 +732,40 @@ class AdminShell extends StatelessWidget {
         final wide = c.maxWidth >= 1000;
         final sidebar = Container(
           width: 250,
-          color: _A.deep,
+          color: Colors.white,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Padding(
                   padding: EdgeInsets.fromLTRB(20, 24, 20, 8),
-                  child: BrandPill(dark: true, compact: true)),
+                  child: BrandPill(compact: true)),
               Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
                   child: Text('GEDA Admin Console',
-                      style: t.labelSmall?.copyWith(color: Colors.white60))),
-              for (var i = 0; i < _items.length; i++)
-                _SideItem(
-                    icon: _items[i].$3,
-                    label: _items[i].$2,
-                    selected: _index == i,
-                    onTap: () => context.go(_items[i].$1)),
-              const Spacer(),
+                      style: t.labelSmall
+                          ?.copyWith(color: AppColors.textSecondary))),
+              Expanded(
+                child: ListView(
+                  padding: EdgeInsets.zero,
+                  children: [
+                    for (var i = 0; i < _items.length; i++)
+                      _SideItem(
+                          icon: _items[i].$3,
+                          label: _items[i].$2,
+                          selected:
+                              location != '/admin/notifications' && _index == i,
+                          onTap: () => context.go(_items[i].$1)),
+                  ],
+                ),
+              ),
               Padding(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(12),
                 child: Container(
-                  padding: const EdgeInsets.all(12),
+                  padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(12)),
+                      color: const Color(0xFFF0FAF2),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: _A.border)),
                   child: Row(
                     children: [
                       Avatar(
@@ -759,13 +778,13 @@ class AdminShell extends StatelessWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(u.displayName,
-                                style:
-                                    t.labelLarge?.copyWith(color: Colors.white),
+                                style: t.labelLarge
+                                    ?.copyWith(color: AppColors.textPrimary),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis),
                             Text('Programme Officer',
                                 style: t.labelSmall
-                                    ?.copyWith(color: Colors.white60)),
+                                    ?.copyWith(color: AppColors.textSecondary)),
                           ],
                         ),
                       ),
@@ -776,7 +795,7 @@ class AdminShell extends StatelessWidget {
                           s.signOut();
                         },
                         icon: const Icon(Icons.logout_rounded,
-                            color: Colors.white70, size: 20),
+                            color: AppColors.textSecondary, size: 20),
                       ),
                     ],
                   ),
@@ -792,15 +811,29 @@ class AdminShell extends StatelessWidget {
           appBar: wide
               ? null
               : AppBar(
-                  title: Text(_items[_index].$2),
-                  backgroundColor: Colors.white),
+                  title: Text(location == '/admin/notifications'
+                      ? 'Notifications'
+                      : _items[_index].$2),
+                  backgroundColor: Colors.white,
+                  actions: [
+                    IconButton(
+                      tooltip: 'Notifications',
+                      onPressed: () => context.go('/admin/notifications'),
+                      icon: const Icon(Icons.notifications_none_rounded),
+                    ),
+                  ],
+                ),
           body: Row(
             children: [
               if (wide) sidebar,
               Expanded(
                 child: Column(
                   children: [
-                    if (wide) _TopBar(title: _items[_index].$2),
+                    if (wide)
+                      _TopBar(
+                          title: location == '/admin/notifications'
+                              ? 'Notifications'
+                              : _items[_index].$2),
                     Expanded(child: child),
                   ],
                 ),
@@ -829,9 +862,7 @@ class _SideItem extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
       child: Material(
-        color: selected
-            ? Colors.white.withValues(alpha: 0.14)
-            : Colors.transparent,
+        color: selected ? const Color(0xFFE4F2E6) : Colors.transparent,
         borderRadius: BorderRadius.circular(10),
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
@@ -841,14 +872,16 @@ class _SideItem extends StatelessWidget {
             child: Row(
               children: [
                 Icon(icon,
-                    color: selected ? Colors.white : Colors.white70, size: 20),
+                    color: selected ? _A.deep : AppColors.textSecondary,
+                    size: 20),
                 const SizedBox(width: 12),
                 Expanded(
                     child: Text(label,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                            color: selected ? Colors.white : Colors.white70))),
+                            color:
+                                selected ? _A.deep : AppColors.textSecondary))),
               ],
             ),
           ),
@@ -881,8 +914,8 @@ class _TopBar extends StatelessWidget {
           Text('GEDA State Node: Gandhinagar', style: t.labelMedium),
           const SizedBox(width: 16),
           IconButton(
-              onPressed: () => showAppSnack(context, 'No new alerts',
-                  icon: Icons.notifications_none_rounded),
+              tooltip: 'Notifications',
+              onPressed: () => context.go('/admin/notifications'),
               icon: const Icon(Icons.notifications_none_rounded)),
         ],
       ),

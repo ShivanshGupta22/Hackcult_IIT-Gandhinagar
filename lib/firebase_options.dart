@@ -13,7 +13,7 @@ class DefaultFirebaseOptions {
   static FirebaseOptions get currentPlatform {
     if (kIsWeb) {
       return _options(
-        apiKey: 'AIzaSyDps9LGSI97xxq051fgRYqHJ9ZoYyy1tT4',
+        apiKey: const String.fromEnvironment('FIREBASE_API_KEY'),
         appId: '1:983072556271:web:16d158ec53538e9924071a',
         authDomain: '$projectId.firebaseapp.com',
       );
@@ -22,7 +22,7 @@ class DefaultFirebaseOptions {
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
         return _options(
-          apiKey: 'AIzaSyDps9LGSI97xxq051fgRYqHJ9ZoYyy1tT4',
+          apiKey: const String.fromEnvironment('FIREBASE_API_KEY'),
           appId: '1:983072556271:android:3dae1dee045e568824071a',
         );
       case TargetPlatform.iOS:

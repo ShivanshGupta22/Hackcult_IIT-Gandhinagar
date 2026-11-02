@@ -27,6 +27,16 @@ These are prototype-only credentials. They do not sign in to the deployed Fireba
 
 The deployed web prototype is available at [green-energy-fb652.web.app](https://green-energy-fb652.web.app). Firebase Auth and Firestore persist citizen profiles/settings, task status, monthly impact, community goals, solar estimates, and survey requests.
 
+Firebase client configuration is not committed. Copy `firebase-config.example.json` to `firebase-config.json`, add your Firebase **web app API key** locally, and keep the local file untracked. For Android, download `google-services.json` for this app from Firebase Console and place it at `android/app/google-services.json`; it is git-ignored.
+
+```powershell
+Copy-Item firebase-config.example.json firebase-config.json
+flutter run -d chrome --dart-define-from-file=firebase-config.json
+flutter build web --dart-define-from-file=firebase-config.json
+```
+
+Firebase client API keys are visible in client apps and compiled web assets; build-time configuration only keeps the key out of the source repository. Restrict the key in Google Cloud Console to the required APIs and app/referrer restrictions. Never put service-account keys or other server secrets in Flutter configuration.
+
 The admin portal requires a Firebase account with the `admin` custom claim. Admins can view saved survey requests and update their status. The Overview, content editing, and campaigns pages explain which prototype functions are not connected rather than presenting demo values as live data.
 
 ## Prototype limitations

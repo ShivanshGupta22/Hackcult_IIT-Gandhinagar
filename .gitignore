@@ -9,6 +9,8 @@ build/
 android/.gradle/
 android/local.properties
 android/key.properties
+android/app/google-services.json
 ios/Pods/
 functions/node_modules/
 functions/lib/
+firebase-config.json
