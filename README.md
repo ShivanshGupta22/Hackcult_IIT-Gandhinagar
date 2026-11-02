@@ -10,7 +10,7 @@ flutter run
 flutter run -d chrome
 ```
 
-Open `/#/admin/login` in the browser to view the admin portal. Use Flutter 3.47+ and Dart 3.13+.
+Without local Firebase configuration the app starts in demo mode, so it can be opened without secrets or a Firebase setup. Open `/admin/login` in the browser to view the admin portal. Use Flutter 3.47+ and Dart 3.13+.
 
 ### Demo mode
 
@@ -34,6 +34,8 @@ Copy-Item firebase-config.example.json firebase-config.json
 flutter run -d chrome --dart-define-from-file=firebase-config.json
 flutter build web --dart-define-from-file=firebase-config.json
 ```
+
+Without `FIREBASE_API_KEY`, Firebase initialization is skipped and the app uses demo mode. This keeps local UI development and the admin demo usable without committing Firebase configuration.
 
 Firebase client API keys are visible in client apps and compiled web assets; build-time configuration only keeps the key out of the source repository. Restrict the key in Google Cloud Console to the required APIs and app/referrer restrictions. Never put service-account keys or other server secrets in Flutter configuration.
 
