@@ -27,8 +27,17 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build Admin Web
-        run: flutter build web --release -t lib/main_admin.dart
+      - - name: Build Admin Web
+        run: |
+          flutter build web --release -t lib/main_admin.dart --verbose 2>&1 | tee flutter-build.log
+
+          - name: Upload Flutter Build Logs
+  if: always()
+  uses: actions/upload-artifact@v4
+  with:
+    name: flutter-build-logs
+    path: flutter-build.log
+    if-no-files-found: ignore
 
       - name: Prepare Vercel output
         run: |
